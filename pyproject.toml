@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "nexus"
+version = "0.1.0"
+description = "AI-powered pipeline failure investigation system"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = {extras = ["standard"], version = "^0.115"}
+openai = ">=2.45,<3"
+pydantic-settings = "^2.6"
+asyncpg = "^0.30"
+sqlalchemy = {extras = ["asyncio"], version = "^2.0"}
+alembic = "^1.14"
+redis = {extras = ["asyncio"], version = "^5.2"}
+azure-mgmt-datafactory = "^6.0"
+azure-identity = "^1.19"
+azure-keyvault-secrets = "^4.9"
+mcp = "^1.9"
+httpx = "^0.27"
+openai-agents = "^0.18"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+pytest-asyncio = "^0.24"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
