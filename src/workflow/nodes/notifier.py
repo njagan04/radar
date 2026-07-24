@@ -1,10 +1,13 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
+from config.settings import settings
 from db.models import AuditLog, ProjectContact
 from notifications import messages
+from notifications.email import send_investigation_email
 from workflow.context import WorkflowContext
 from workflow.state import InvestigationState
 
@@ -13,15 +16,18 @@ logger = logging.getLogger(__name__)
 
 async def notifier(state: InvestigationState, ctx: WorkflowContext) -> dict:
     """
-    Decides which message applies (cancelled / human-action / loop-prevention / cascade /
-    cross-pipeline-known-fix / known-fix / rca-complete) and whether a rerun approval is
-    needed, then writes it to the audit log. No delivery here — the Outlook deep-link email
-    and the chat seed message (next milestone) read `notification_ready` audit entries to
-    render the actual notification/seed message.
+    One notification body regardless of outcome (2026-07-24, simplified further) — the email's
+    only job is getting the human into the chat; the specifics (cancelled / human-action-needed
+    / investigation summary) render once they open it, via the seed message. `needs_approval`/
+    `proposed_at` stay as internal fields — they drive the chat's own rerun-consent flow, which
+    is a functional decision, not a notification-copy decision.
+
+    Delivery: fire-and-forget via asyncio.create_task so this doesn't hold up run_diagnosis (or
+    the concurrency semaphore slot it runs under) waiting on an email round-trip. The audit
+    trail (`notification_ready`) is written regardless of whether the send actually succeeds —
+    delivery is a convenience layer on top of it, not the source of truth.
     """
     db_factory = ctx.db_factory
-    bucket = state.get("classification_bucket")
-    upstream_also_failed = state.get("upstream_also_failed")
 
     async with db_factory() as db:
         result = await db.execute(
@@ -34,45 +40,14 @@ async def notifier(state: InvestigationState, ctx: WorkflowContext) -> dict:
 
     assigned_user_email = contact.assigned_user_email if contact else None
 
-    needs_approval = False
+    # Not cancelled and not permanently-human-only -> the investigator's fix is a rerun
+    # candidate, so the chat should offer the approve/deny consent flow.
+    needs_approval = not (
+        state.get("error_category") == "cancelled" or state.get("requires_human_action")
+    )
 
-    if state.get("error_category") == "cancelled":
-        notify_type = "pipeline_cancelled"
-        body = messages.cancelled_body(state["pipeline_name"], state["project"])
-
-    elif state.get("requires_human_action"):
-        notify_type = "human_action_required"
-        body = messages.human_action_required_body(
-            state["pipeline_name"], state["project"], state.get("error_category"), state.get("last_error")
-        )
-
-    elif bucket == 0:
-        notify_type = "loop_prevention"
-        body = messages.loop_prevention_body(state["pipeline_name"], state["project"], state.get("error_category"))
-
-    elif upstream_also_failed:
-        notify_type = "cascade_confirmed"
-        body = messages.cascade_confirmed_body(state["pipeline_name"], state["project"])
-
-    elif bucket == 1 and state.get("cross_pipeline_match"):
-        notify_type = "cross_pipeline_known_fix"
-        body = messages.cross_pipeline_known_fix_body(
-            state["pipeline_name"], state["project"], state.get("error_category"),
-            state.get("cross_pipeline_source"), state.get("known_fix"),
-        )
-        needs_approval = True
-
-    elif bucket == 1:
-        notify_type = "known_fix"
-        body = messages.known_fix_body(
-            state["pipeline_name"], state["project"], state.get("error_category"), state.get("known_fix")
-        )
-        needs_approval = True
-
-    else:
-        notify_type = "rca_complete"
-        body = messages.rca_complete_body(state["pipeline_name"], state["project"], state.get("investigation_summary"))
-        needs_approval = True
+    chat_url = f"{settings.nexus_base_url}/chat/{state['investigation_id']}"
+    body = messages.investigation_notification_body(state["pipeline_name"], state["project"], chat_url)
 
     now = datetime.now(tz=timezone.utc)
     proposed_at = now.isoformat() if needs_approval else None
@@ -87,12 +62,21 @@ async def notifier(state: InvestigationState, ctx: WorkflowContext) -> dict:
             event_type="notification_ready",
             actor="notifier",
             detail={
-                "notify_type": notify_type,
                 "body": body,
                 "needs_approval": needs_approval,
                 "assigned_user_email": assigned_user_email,
             },
         ))
         await db.commit()
+
+    if assigned_user_email:
+        subject = f"Pipeline failure: {state['pipeline_name']} ({state['project']})"
+        asyncio.create_task(send_investigation_email(assigned_user_email, subject, body))
+    else:
+        logger.warning(
+            "No primary_approver contact for project=%s — skipping email, chat is still reachable "
+            "for anyone with project access. investigation_id=%s",
+            state["project"], state["investigation_id"],
+        )
 
     return {"notify_sent": True, "needs_approval": needs_approval, "proposed_at": proposed_at}
