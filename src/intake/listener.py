@@ -1,24 +1,22 @@
-import asyncio
 import hashlib
 import hmac
 import logging
 import re
-import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config.settings import settings
 from db.models import Investigation, ProjectMetadata
 from gateway.vault import VaultResolutionError, populate_credentials
-from intake.batch_detection import check_batch, get_batch_members
-from notifications import messages
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events")
+
+_SIGNATURE_HEADER = "X-Nexus-Signature-256"
 
 
 class ErrorDetail(BaseModel):
@@ -39,20 +37,27 @@ class PipelineFailureEvent(BaseModel):
     last_error: str | None = None
     error_detail: ErrorDetail | None = None
     failure_count: int = 0
-    hmac_token: str
     # No `credentials` block anymore — WatchTower only needs to send `project` now.
-    # Nexus resolves project -> ProjectMetadata.key_vault_uri -> secret itself
+    # Nexus resolves project -> ProjectFactory.key_vault_uri -> secret itself
     # (see gateway/vault.py). Non-secret ADF infra params also come from
     # ProjectMetadata (onboarding-time config), not the event payload.
+    #
+    # No `hmac_token` body field either (fixed 2026-07-24) — the signature moved to the
+    # `X-Nexus-Signature-256` header (see _verify_hmac). The old body-field scheme was
+    # self-referentially broken: it signed the full raw body, which necessarily included
+    # the signature field's own value — there is no way to correctly compute a signature
+    # over a body that already contains that exact signature. A header-based scheme (same
+    # shape as GitHub's X-Hub-Signature-256 / Stripe's Stripe-Signature) signs only the
+    # body's actual content, so it isn't self-referential.
 
 
 def _normalize_project(name: str) -> str:
     return re.sub(r'_+', '_', re.sub(r'[^a-z0-9]', '_', name.lower())).strip('_')
 
 
-def _verify_hmac(payload_bytes: bytes, token: str, secret: str) -> bool:
+def _verify_hmac(payload_bytes: bytes, signature: str, secret: str) -> bool:
     expected = hmac.HMAC(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, token)
+    return hmac.compare_digest(expected, signature)
 
 
 async def _ensure_project_metadata(db_factory, project: str) -> None:
@@ -66,54 +71,25 @@ async def _ensure_project_metadata(db_factory, project: str) -> None:
         await db.commit()
 
 
-async def _fire_batch_alert(request: Request, event: PipelineFailureEvent) -> None:
-    now = time.time()
-    members = await get_batch_members(request.app.state.redis, event.platform, now)
-    # Members are "project:timestamp" strings — extract unique project names
-    recent_projects = list({m.rsplit(":", 1)[0] for m in members})
-    window_minutes = settings.batch_window_seconds // 60
-
-    body = messages.batch_alert_body(event.platform, len(members), window_minutes, recent_projects)
-    # Delivery (Outlook digest email) is built in the next milestone — logged for now.
-    logger.info("Batch alert: platform=%s %s", event.platform, body)
-
-
 @router.post("/pipeline-failure", status_code=202)
-async def receive_pipeline_failure(request: Request, event: PipelineFailureEvent):
+async def receive_pipeline_failure(
+    request: Request,
+    event: PipelineFailureEvent,
+    x_nexus_signature_256: str | None = Header(default=None, alias=_SIGNATURE_HEADER),
+):
     body = await request.body()
-    if settings.hmac_secret is not None and not _verify_hmac(body, event.hmac_token, settings.hmac_secret):
-        raise HTTPException(status_code=401, detail="Invalid HMAC signature")
+    if not x_nexus_signature_256 or not _verify_hmac(body, x_nexus_signature_256, settings.hmac_secret):
+        raise HTTPException(status_code=401, detail="Invalid or missing signature")
 
     project = _normalize_project(event.project)
     await _ensure_project_metadata(request.app.state.db_factory, project)
 
-    # Batch detection — check before creating investigation_id or touching Redis creds
-    now = time.time()
-    batch_status = await check_batch(
-        redis=request.app.state.redis,
-        platform=event.platform,
-        project=project,
-        now=now,
-    )
-
-    if batch_status == "batch_alert":
-        # This is the threshold-th failure — send one aggregated alert, suppress investigation
-        asyncio.create_task(_fire_batch_alert(request, event))
-        logger.info(
-            "Batch threshold reached: platform=%s project=%s — individual investigation suppressed",
-            event.platform,
-            project,
-        )
-        return {"accepted": True, "status": "batch_alert_sent"}
-
-    if batch_status == "batch_suppress":
-        # Already alerted for this batch — silently suppress
-        logger.info(
-            "Batch suppression: platform=%s project=%s",
-            event.platform,
-            project,
-        )
-        return {"accepted": True, "status": "batch_suppressed"}
+    # Batch detection dropped from scope (2026-07-24, user's explicit call) — every failure
+    # gets its own investigation + chat entry point unconditionally now. Under the chat-first
+    # model, a suppressed batch had no thread a human could actually open to investigate it
+    # (_fire_batch_alert only logged a message). src/intake/batch_detection.py itself
+    # (check_batch/get_batch_members) stays in the repo unused, for potential future
+    # re-enablement once a chat-compatible batch UX is actually designed.
 
     # Individual investigation — record the failure, but do NOT auto-invoke diagnosis.
     # Diagnosis is deferred to a live "Diagnose" click (next milestone's chat endpoint).
