@@ -5,13 +5,34 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from config.settings import settings
-from db.models import AuditLog, ProjectRCA, UserRole
-from gateway.rbac import RBACGateway, adf_infra_params
-from notifications import messages
+from db.models import AuditLog, ProjectRCA
+from gateway.rbac import RBACGateway, infra_params
 from workflow.context import WorkflowContext
 from workflow.state import InvestigationState
 
 logger = logging.getLogger(__name__)
+
+
+def _rerun_outcome_summary(pipeline_name: str, outcome: str, new_run_id: str | None) -> str:
+    """
+    Audit-log commentary only, never delivered to a human — the person who approved the
+    rerun checks the result themselves (explicit call, not an oversight). Lives here rather
+    than in notifications/messages.py since nothing about it is actually a notification.
+    """
+    if outcome == "succeeded":
+        body = "The pipeline rerun completed successfully."
+        if new_run_id:
+            body += f" Run ID: {new_run_id}"
+        return body
+    if outcome == "failed":
+        body = "The pipeline rerun failed again. Manual investigation is required."
+        if new_run_id:
+            body += f" Run ID: {new_run_id}"
+        return body
+    return (
+        "The pipeline rerun was triggered but its outcome could not be determined within "
+        "the monitoring window. Check ADF directly."
+    )
 
 
 async def _check_rerun_outcome(
@@ -52,13 +73,12 @@ async def _check_rerun_outcome(
                     db=db,
                     redis=redis,
                     investigation_id=state["investigation_id"],
-                    infra_params=adf_infra_params(state),
+                    infra_params=infra_params(state),
                 )
                 result = await gateway.call(
                     tool_name="get_pipeline_run_status",
                     arguments={"run_id": new_run_id},
                     actor="system",
-                    role="investigator",
                     pipeline_id=state["pipeline_name"],
                     project=state["project"],
                     platform=state["platform"],
@@ -102,7 +122,7 @@ async def _check_rerun_outcome(
                         detail={
                             "new_run_id": new_run_id,
                             "outcome": outcome,
-                            "body": messages.rerun_outcome_body(state["pipeline_name"], outcome, new_run_id),
+                            "body": _rerun_outcome_summary(state["pipeline_name"], outcome, new_run_id),
                         },
                     ))
                     await db.commit()
@@ -133,12 +153,10 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
             await db.commit()
         return {"thread_status": "completed"}
 
-    # Determine actor's role for the rerun call (must be senior_eng or admin)
-    async with db_factory() as db:
-        role_result = await db.execute(
-            select(UserRole.role).where(UserRole.upn == approval_actor)
-        )
-        actor_role: str = role_result.scalar_one_or_none() or "investigator"
+    # No role gate here — approval_actor already claimed this thread (chat_threads.
+    # claimed_by_user_email) and clicked approve on the native consent dialog; that IS the
+    # authorization. RBACGateway.call() below still independently checks rbac_permissions
+    # for a per-tool allowed/requires_consent gate, just with no role dimension anymore.
 
     # Write rerun_approved audit log
     async with db_factory() as db:
@@ -150,7 +168,6 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
             timestamp=datetime.now(timezone.utc),
             event_type="rerun_approved",
             actor=approval_actor,
-            role=actor_role,
             detail={"rca_id": state.get("rca_id")},
         ))
         await db.commit()
@@ -171,13 +188,12 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
                     db=db,
                     redis=redis,
                     investigation_id=state["investigation_id"],
-                    infra_params=adf_infra_params(state),
+                    infra_params=infra_params(state),
                 )
                 history = await gateway.call(
                     tool_name="get_pipeline_run_history",
                     arguments={"pipeline_name": state["pipeline_name"], "days": 1},
                     actor=approval_actor,
-                    role=actor_role,
                     pipeline_id=state["pipeline_name"],
                     project=state["project"],
                     platform=state["platform"],
@@ -198,7 +214,6 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
                         timestamp=datetime.now(timezone.utc),
                         event_type="rerun_already_resolved_externally",
                         actor=approval_actor,
-                        role=actor_role,
                         detail={"reason": "already_recovered_or_running"},
                     ))
                     await db.commit()
@@ -219,13 +234,12 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
                 db=db,
                 redis=redis,
                 investigation_id=state["investigation_id"],
-                infra_params=adf_infra_params(state),
+                infra_params=infra_params(state),
             )
             result = await gateway.call(
                 tool_name="rerun_pipeline",
                 arguments={"pipeline_name": state["pipeline_name"]},
                 actor=approval_actor,
-                role=actor_role,
                 pipeline_id=state["pipeline_name"],
                 project=state["project"],
                 platform=state["platform"],
@@ -235,7 +249,7 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
         rerun_detail = {"new_run_id": new_run_id}
     except PermissionError:
         rerun_outcome = "denied_rbac"
-        rerun_detail = {"actor_role": actor_role}
+        rerun_detail = {}
     except Exception as exc:
         rerun_outcome = "failed"
         rerun_detail = {"error": str(exc)}
@@ -254,7 +268,6 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
                     "timestamp": now.isoformat(),
                     "outcome": rerun_outcome,
                     "actor": approval_actor,
-                    "actor_role": actor_role,
                     "error_category_before_rerun": state.get("error_category"),
                     "cleared_by_successful_run": False,
                     **rerun_detail,
@@ -267,7 +280,6 @@ async def rerun(state: InvestigationState, ctx: WorkflowContext) -> dict:
                     timestamp=now,
                     event_type="rerun_executed",
                     actor=approval_actor,
-                    role=actor_role,
                     detail={"outcome": rerun_outcome, **rerun_detail},
                 ))
                 await db.commit()

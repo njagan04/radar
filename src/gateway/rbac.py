@@ -14,14 +14,14 @@ from workflow.state import InvestigationState
 _TOOL_REGISTRY: dict[str, Callable[..., dict]] = adf_tools.TOOL_REGISTRY  # type: ignore[assignment]
 
 
-def adf_infra_params(state: "dict | InvestigationState") -> dict:
-    """Extract the non-secret ADF infra params from LangGraph state."""
+def infra_params(state: "dict | InvestigationState") -> dict:
+    """Extract the non-secret factory identifiers (sourced from ProjectFactory) from state."""
     return {
-        "tenant_id": state.get("adf_tenant_id"),
-        "client_id": state.get("adf_client_id"),
-        "subscription_id": state.get("adf_subscription_id"),
-        "resource_group": state.get("adf_resource_group"),
-        "factory_name": state.get("adf_factory_name"),
+        "tenant_id": state.get("tenant_id"),
+        "client_id": state.get("client_id"),
+        "subscription_id": state.get("subscription_id"),
+        "resource_group": state.get("resource_group"),
+        "factory_name": state.get("factory_name"),
     }
 
 
@@ -43,25 +43,24 @@ class RBACGateway:
         tool_name: str,
         arguments: dict,
         actor: str,
-        role: str,
         pipeline_id: str,
         project: str,
         platform: str,
     ) -> dict:
-        allowed = await self._check_permission(tool_name, role)
+        # No role dimension — permission is per-tool only (allowed / requires_consent).
+        # requires_consent tiering is enforced by the chat UI showing the consent dialog
+        # before this is ever called; this check is the independent, UI-agnostic gate.
+        allowed = await self._check_permission(tool_name)
         event_type = "rbac_tool_call_allowed" if allowed else "rbac_tool_call_denied"
-        await self._log(event_type, pipeline_id, project, platform, actor, role, {"tool": tool_name})
+        await self._log(event_type, pipeline_id, project, platform, actor, {"tool": tool_name})
         if not allowed:
-            raise PermissionError(f"Role '{role}' cannot call '{tool_name}'")
+            raise PermissionError(f"'{tool_name}' is not an allowed tool")
         enriched = await self._enrich(arguments)
-        return await self._dispatch(tool_name, enriched)
+        return await self._dispatch(tool_name, enriched, project)
 
-    async def _check_permission(self, tool_name: str, role: str) -> bool:
+    async def _check_permission(self, tool_name: str) -> bool:
         result = await self._db.execute(
-            select(RBACPermission.allowed).where(
-                RBACPermission.role == role,
-                RBACPermission.tool_name == tool_name,
-            )
+            select(RBACPermission.allowed).where(RBACPermission.tool_name == tool_name)
         )
         row = result.scalar_one_or_none()
         return bool(row) if row is not None else False
@@ -77,10 +76,19 @@ class RBACGateway:
         secret = json.loads(raw).get("client_secret")
         return {**self._infra_params, **arguments, "client_secret": secret}
 
-    async def _dispatch(self, tool_name: str, arguments: dict) -> dict:
+    async def _dispatch(self, tool_name: str, arguments: dict, project: str) -> dict:
         fn = _TOOL_REGISTRY.get(tool_name)
         if fn is None:
             raise ValueError(f"No tool registered for '{tool_name}'")
+        if asyncio.iscoroutinefunction(fn):
+            # Checkpoint-enabled tools (create/update/rollback/back/forward) need Postgres
+            # access (mcp_servers/adf/tools/_checkpoints.py is async-only, matching the rest
+            # of this codebase's exclusively-async DB access) alongside the still-synchronous
+            # Azure SDK call, which each such tool wraps in its own run_in_executor
+            # internally. `db`/`project` are gateway-level context, not agent-supplied
+            # arguments — never exposed in a tool's schema, so they can't collide with a
+            # real parameter name.
+            return await fn(db=self._db, project=project, **arguments)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: fn(**arguments))
 
@@ -91,7 +99,6 @@ class RBACGateway:
         project: str,
         platform: str,
         actor: str | None,
-        role: str | None,
         detail: dict | None,
     ) -> None:
         self._db.add(AuditLog(
@@ -102,7 +109,6 @@ class RBACGateway:
             timestamp=datetime.now(timezone.utc),
             event_type=event_type,
             actor=actor,
-            role=role,
             detail=detail,
         ))
         await self._db.commit()

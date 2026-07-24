@@ -1,6 +1,6 @@
 import logging
 
-from gateway.rbac import RBACGateway, adf_infra_params
+from gateway.rbac import RBACGateway, infra_params
 from workflow.context import WorkflowContext
 from workflow.state import InvestigationState
 
@@ -42,13 +42,12 @@ async def initial_evidence_fetch(state: InvestigationState, ctx: WorkflowContext
                 db=db,
                 redis=redis,
                 investigation_id=state["investigation_id"],
-                infra_params=adf_infra_params(state),
+                infra_params=infra_params(state),
             )
             result = await gateway.call(
                 tool_name=tool_name,
                 arguments=arguments,
                 actor="system",
-                role="investigator",
                 pipeline_id=state["pipeline_name"],
                 project=state["project"],
                 platform=platform,
