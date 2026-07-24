@@ -84,7 +84,12 @@ _TOOLS = [
     ),
     Tool(
         name="rerun_pipeline",
-        description="Trigger a new run of a pipeline. RBAC-gated: requires senior_eng or admin role.",
+        # No role concept exists anymore (rbac_permissions has no role column) and this stdio
+        # path calls TOOL_REGISTRY directly, bypassing RBACGateway's allowed/requires_consent
+        # check entirely — unlike the in-process chat path, nothing here is actually gated.
+        # Tracked as a real, unfixed gap (need_to_implement.txt) — described accurately here
+        # rather than claiming a protection that isn't there.
+        description="Trigger a new run of a pipeline. Not RBAC-gated via this stdio path — caller supplies credentials directly.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -109,6 +114,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     fn = _TOOL_MAP.get(name)
     if fn is None:
         raise ValueError(f"Unknown tool: {name}")
+    if asyncio.iscoroutinefunction(fn):
+        # Checkpoint-enabled tools (create/update/rollback/back/forward) need Postgres
+        # access (see mcp_servers/adf/tools/_checkpoints.py) — this stdio path has no DB
+        # session/engine wired up at all, unlike the in-process RBACGateway path (gateway/
+        # rbac.py). Fail loudly and clearly rather than silently, until that's built.
+        raise NotImplementedError(
+            f"'{name}' requires checkpoint/Postgres access not yet wired into this stdio "
+            "path — use the in-process chat flow (RBACGateway) instead."
+        )
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: fn(**arguments))
     return [TextContent(type="text", text=json.dumps(result))]
