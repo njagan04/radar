@@ -28,7 +28,6 @@ async def handle_denial(state: InvestigationState, ctx: WorkflowContext) -> dict
                         "timestamp": now.isoformat(),
                         "actor": approval_actor,
                         "fix_applied": rca.fix_applied,
-                        "classification_bucket": state.get("classification_bucket"),
                         "error_category": state.get("error_category"),
                     }
                     history = list(rca.denial_history or [])
@@ -58,7 +57,8 @@ async def handle_denial(state: InvestigationState, ctx: WorkflowContext) -> dict
                 rca_id,
             )
     else:
-        # No RCA (e.g. bucket=1 known fix without prior RCA row) — still audit the denial
+        # No RCA on this investigation (shouldn't normally happen once investigator has run,
+        # but handle it rather than assume) — still audit the denial
         async with db_factory() as db:
             db.add(AuditLog(
                 investigation_id=state["investigation_id"],
@@ -68,7 +68,7 @@ async def handle_denial(state: InvestigationState, ctx: WorkflowContext) -> dict
                 timestamp=now,
                 event_type="rerun_denied",
                 actor=approval_actor,
-                detail={"rca_id": None, "known_fix": state.get("known_fix")},
+                detail={"rca_id": None, "error_category": state.get("error_category")},
             ))
             await db.commit()
 

@@ -6,9 +6,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 @dataclass
 class WorkflowContext:
-    """Plain replacement for LangGraph's `RunnableConfig`/`configurable` dict — there's no
-    graph anymore, so nodes just take this directly instead of unpacking a stringly-keyed
-    config dict via `get_configurable()`."""
+    """Per-call dependencies (DB session factory, Redis, the acting approver if any) passed
+    directly to each workflow node function — no framework, no config-dict indirection."""
 
     db_factory: async_sessionmaker
     redis: aioredis.Redis
