@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -6,7 +7,7 @@ class Settings(BaseSettings):
 
     azure_openai_endpoint: str
     azure_openai_api_key: str
-    azure_openai_api_version: str  # no longer used by investigator.py/classifier.py — see azure_openai_v1_base_url
+    azure_openai_api_version: str  # not used by investigator.py — see azure_openai_v1_base_url
     azure_openai_deployment: str
     azure_openai_model: str = "gpt-4o"
 
@@ -26,14 +27,51 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
 
     max_concurrent_investigations: int = 10
+    # Distributed semaphore (gateway/concurrency.py) — shared across every replica via Redis.
+    # Lease comfortably above investigator.py's MAX_TURNS-bounded worst case so a healthy
+    # long-running diagnosis is never pruned as if it were a crashed replica's stale slot.
+    concurrency_lease_seconds: float = 20 * 60
+    # How long a request queues (with backoff) for a slot before giving up — chosen because the
+    # scenario that actually fills the cap (a real incident, many humans clicking Diagnose in the
+    # same few minutes) is exactly when a hard rejection hurts most; queueing self-resolves as
+    # slots free up instead.
+    concurrency_max_wait_seconds: float = 120.0
     rerun_freshness_window_seconds: int = 7200
 
     nexus_base_url: str = "http://localhost:8000"
 
-    hmac_secret: str | None = None
+    # TEMPORARY dev/test shortcut (2026-07-24, explicit user call) — Key Vault isn't wired up
+    # for testing yet. gateway/vault.py falls back to this for any project whose
+    # project_factories row has no key_vault_uri set (no project-name matching needed — the
+    # DB row itself is what marks a project as "no vault configured yet"). Every project with
+    # a real key_vault_uri still goes through the real Key Vault path unchanged.
+    # Remove once Key Vault is actually tested end-to-end.
+    adf_client_secret: str | None = None
 
-    # Approval flow
-    approval_timeout_hours: int = 24
+    # Outlook email delivery via Microsoft Graph (notifications/email.py) — reuses the SSO
+    # Entra ID app registration (item 17) with an added Mail.Send permission. Optional:
+    # notification delivery is a convenience layer, not a security gate, so missing config
+    # degrades to "skip with a warning," unlike hmac_secret's fail-closed requirement.
+    graph_tenant_id: str | None = None
+    graph_client_id: str | None = None
+    graph_client_secret: str | None = None
+    notification_sender_upn: str | None = None
+
+    # Required, no default — a missing/empty secret used to silently disable signature
+    # verification (settings.hmac_secret is not None was True even for ""), which is a
+    # fail-open bug: an empty-string HMAC key is trivially forgeable by anyone. Fail closed
+    # instead: the app refuses to start without a real, non-empty secret configured.
+    hmac_secret: str
+
+    @field_validator("hmac_secret")
+    @classmethod
+    def _hmac_secret_not_empty(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError(
+                "HMAC_SECRET must be set to a real, non-empty value — "
+                "an empty secret makes signature verification trivially forgeable."
+            )
+        return value
 
     # Rerun outcome polling
     rerun_outcome_check_interval_seconds: int = 300  # 5 min between checks
