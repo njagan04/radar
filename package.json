@@ -1,0 +1,12 @@
+{
+  "name": "radar-backend",
+  "private": true,
+  "description": "Node/Prisma tooling only — this backend runs on Python/FastAPI (see pyproject.toml). Prisma here owns prisma/schema.prisma's migration history for the 'radar' Postgres schema; nothing in src/ generates or queries through the Prisma client itself.",
+  "scripts": {
+    "migrate": "prisma migrate deploy",
+    "migrate:status": "prisma migrate status"
+  },
+  "devDependencies": {
+    "prisma": "^5.16.2"
+  }
+}
