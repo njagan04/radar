@@ -24,7 +24,10 @@ _CREDS = dict(
 
 @pytest.fixture
 async def db():
-    engine = create_async_engine(settings.database_url)
+    engine = create_async_engine(
+        settings.database_url,
+        connect_args={"server_settings": {"search_path": settings.radar_db_schema}},
+    )
     db_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with db_factory() as session:
         await _cleanup(session)
