@@ -1,8 +1,12 @@
+# NOTE: this compose file's own `postgres` service is stale as of the 2026-07-29
+# WatchTower/RADAR DB consolidation — RADAR's tables now live inside WatchTower's own Postgres
+# instance (the "radar" schema), not a standalone DB. Update DATABASE_URL below to point at
+# that instance (and drop this local `postgres` service) before actually using this file.
 services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: nexus
+      POSTGRES_DB: radar
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
@@ -15,13 +19,13 @@ services:
     ports:
       - "6379:6379"
 
-  nexus:
+  radar:
     build: .
     ports:
       - "8000:8000"
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/nexus
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/radar
       REDIS_URL: redis://redis:6379
     depends_on:
       - postgres

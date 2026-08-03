@@ -160,7 +160,7 @@ def get_activity_run_error(
     any ExecutePipeline activity chains until the leaf failed activity is found.
 
     Example for Master → Pipeline B → Pipeline C → Copy Activity (Failed):
-    Returns the full execution path so the classifier and investigator see the real
+    Returns the full execution path so the chat agent sees the real
     root cause, not just "Execute Pipeline activity failed."
     """
     client = _client(tenant_id, client_id, client_secret, subscription_id)
@@ -333,9 +333,8 @@ def rerun_pipeline(
     """
     Rerun a pipeline. This function itself has no authorization logic — gating happens one
     layer up, in RBACGateway.call()'s allowed/requires_consent check (rbac_permissions table,
-    no role dimension). Called two ways today: through RBACGateway (gated) from the chat/
-    investigator path, or directly from mcp_servers/adf/server.py's stdio tool dispatch
-    (NOT gated — a real, tracked gap, see need_to_implement.txt).
+    no role dimension) — the only path that calls this function; RBACGateway is the sole
+    dispatch entry point into TOOL_REGISTRY.
     """
     client = _client(tenant_id, client_id, client_secret, subscription_id)
     run = client.pipelines.create_run(

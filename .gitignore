@@ -32,3 +32,5 @@ logs/
 claude-desktop/
 xyz/
 # tests/
+watch-Tower/
+node_modules/
