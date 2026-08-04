@@ -1,9 +1,9 @@
-# Categories that cannot be resolved by an automated rerun — permanently human-only, by
-# design (matches claude-desktop's R&D conclusion: no tool exists for these on purpose).
-# Checked as a plain lookup against the investigator's own error_category output — not an
-# LLM judgment call, since it doesn't need to be one.
-HUMAN_ACTION_CATEGORIES: set[str] = {"credential_expired", "resource_unavailable", "platform_outage"}
-
+# The canonical vocabulary for ProjectRCA.error_category (db/models.py) — passed to the chat
+# agent via llm/tools.py's record_diagnosis_outcome/check_known_fix docstrings so the LLM
+# stays consistent (e.g. always "timeout", never "Timeout"/"connection_timeout" as free-form
+# variants), which is what makes check_known_fix's cross-pipeline error_category matching
+# actually work. Not enforced as a hard schema constraint — the agent decides everything, per
+# this codebase's established philosophy — just strongly guided.
 ERROR_CATEGORIES: list[str] = [
     "oom",
     "timeout",
@@ -21,4 +21,47 @@ ERROR_CATEGORIES: list[str] = [
     "cancelled",             # pipeline was cancelled (user/system/dependency)
     "unknown",
 ]
+
+# Intake-time categorization (2026-08-06) — a small, deliberately conservative set of known
+# ADF error-code substrings, used ONLY to give a brand-new ProjectRCA row a starting category
+# before any human has diagnosed it. record_diagnosis_outcome (llm/tools.py) unconditionally
+# overwrites error_category on every real diagnosis, so a wrong/unknown guess here self-heals
+# the first time someone actually chats about it — this never needs to be exhaustive.
+_ERROR_CODE_CATEGORY_HINTS: dict[str, str] = {
+    "mappingcolumnnamenotfound": "schema_drift",
+    "schemamismatch": "schema_drift",
+    "usererrorexceededmaxrecords": "data_quality",
+    "invaliddatafound": "data_quality",
+    "timeoutexpired": "timeout",
+    "activitytimeoutexpired": "timeout",
+    "executortimeout": "timeout",
+    "sqlfailedtoconnect": "network",
+    "connectiontimeout": "network",
+    "hostunreachable": "network",
+    "authenticationfailed": "credential_expired",
+    "credentialexpired": "credential_expired",
+    "tokenexpired": "credential_expired",
+    "forbidden": "permissions",
+    "accessdenied": "permissions",
+    "unauthorized": "permissions",
+    "throttl": "rate_limit",
+    "toomanyrequests": "rate_limit",
+    "outofmemory": "oom",
+    "blobnotfound": "storage_access",
+    "containernotfound": "storage_access",
+    "notfound": "resource_unavailable",
+    "cancelled": "cancelled",
+}
+
+
+def categorize_error_code(error_code: str | None) -> str:
+    """Best-effort guess from the raw ADF error code alone (no LLM call) — 'unknown' is a
+    correct, safe default, not a failure; see the hints dict's own docstring for why."""
+    if not error_code:
+        return "unknown"
+    lowered = error_code.lower()
+    for hint, category in _ERROR_CODE_CATEGORY_HINTS.items():
+        if hint in lowered:
+            return category
+    return "unknown"
 
