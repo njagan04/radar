@@ -33,6 +33,28 @@ def list_datasets(
     }
 
 
+def get_dataset_definition(
+    dataset_name: str, factory_name: str,
+    subscription_id: str, resource_group: str,
+    tenant_id: str, client_id: str, client_secret: str,
+) -> dict:
+    """
+    Evidence loop — type, backing linked service, and declared schema/column names only (the
+    part actually needed to diagnose schema_drift). Omits parameters, folder, annotations, and
+    other wire-format metadata a fix never needs to read. Use get_dataset_definition_raw
+    (resource_type="dataset") for the full editable structure once you're ready to write a fix.
+    """
+    client = _client(tenant_id, client_id, client_secret, subscription_id)
+    dataset = client.datasets.get(resource_group, factory_name, dataset_name)
+    wire = _to_wire_dict(dataset)
+    return {
+        "name": dataset_name,
+        "type": wire.get("type", "unknown"),
+        "linked_service_name": (wire.get("linkedServiceName") or {}).get("referenceName"),
+        "schema": wire.get("schema") or wire.get("structure"),
+    }
+
+
 def get_dataset_definition_raw(
     dataset_name: str, factory_name: str,
     subscription_id: str, resource_group: str,

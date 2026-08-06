@@ -34,6 +34,30 @@ def list_data_flows(
     }
 
 
+def get_data_flow_definition(
+    data_flow_name: str, factory_name: str,
+    subscription_id: str, resource_group: str,
+    tenant_id: str, client_id: str, client_secret: str,
+) -> dict:
+    """
+    Evidence loop — type, and the names of its sources/sinks/transformations only, not the
+    full transformation script (which can be large). Use get_data_flow_definition_raw
+    (resource_type="data_flow") to see the actual transformation logic once you know which
+    named source/sink/transformation to inspect.
+    """
+    client = _client(tenant_id, client_id, client_secret, subscription_id)
+    data_flow = client.data_flows.get(resource_group, factory_name, data_flow_name)
+    wire = _to_wire_dict(data_flow)
+    type_properties = wire.get("typeProperties") or {}
+    return {
+        "name": data_flow_name,
+        "type": wire.get("type", "unknown"),
+        "sources": [s.get("name") for s in type_properties.get("sources") or []],
+        "sinks": [s.get("name") for s in type_properties.get("sinks") or []],
+        "transformations": [t.get("name") for t in type_properties.get("transformations") or []],
+    }
+
+
 def get_data_flow_definition_raw(
     data_flow_name: str, factory_name: str,
     subscription_id: str, resource_group: str,
