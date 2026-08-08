@@ -1,8 +1,8 @@
-# Nexus AI
+# RADAR
 
-AI-powered pipeline failure investigation and remediation system. When a monitoring app (**WatchTower**) detects an Azure Data Factory pipeline failure, Nexus opens a live chat where a human works with an LLM agent to diagnose the root cause and — where safe and approved — trigger a rerun. Synapse, Databricks, and Fabric are planned; ADF is the only platform built today.
+AI-powered pipeline failure investigation and remediation system. When a monitoring app (**WatchTower**) detects an Azure Data Factory pipeline failure, RADAR opens a live chat where a human works with an LLM agent to diagnose the root cause and — where safe and approved — trigger a rerun. Synapse, Databricks, and Fabric are planned; ADF is the only platform built today.
 
-This is not a replacement for WatchTower. WatchTower detects failures; Nexus adds investigation, diagnosis, and remediation on top.
+This is not a replacement for WatchTower. WatchTower detects failures; RADAR adds investigation, diagnosis, and remediation on top.
 
 ## How it works
 
@@ -13,31 +13,40 @@ WatchTower detects failure
 POST /events/pipeline-failure  (HMAC-signed)
         │
         ▼
-Investigation row created, credentials resolved from
-per-project Key Vault → cached in Redis
+FailureEvent row created; client_secret resolved per tool
+call straight from WatchTower's own encrypted Credential row
         │
         ▼
-Email notification → human opens the chat
+ChatThread + seed message created immediately, email sent
+→ human opens the chat (no manual "diagnose" trigger needed)
         │
         ▼
-Live LLM agent investigates using real ADF tool calls
-(RBAC-gated, every call logged to the audit trail)
+Human asks a question, or sends a suggested prompt like
+"diagnose this failure" — handled like any other message
         │
         ▼
-Agent proposes a fix → human approves/denies via a
-native in-chat consent dialog
+The conversational LLM agent investigates/acts using real
+ADF tool calls (66 distinct tools, keyword-retrieval-selected
+per turn, RBAC-gated, every call logged to the audit trail)
         │
         ▼
-Approved rerun executes against real ADF infrastructure,
-outcome polled and recorded
+A mutating tool call (e.g. rerun_pipeline) pauses the run and
+shows a native in-chat approval prompt — human approves/denies
+        │
+        ▼
+Approved calls execute against real ADF infrastructure through
+the same RBAC-gated gateway as every other tool call — no
+per-tool special-casing (e.g. no dedicated rerun idempotency/
+freshness/outcome-polling logic; a human approves every mutating
+call individually, which is the actual safety mechanism)
 ```
 
-No LangGraph, no Teams — a human is present for the entire diagnose → propose → approve → rerun sequence, so there's no durable pause/resume mechanism or external approval channel to maintain. Orchestration is plain, directly-callable Python (`run_diagnosis` / `apply_rerun` / `apply_denial`), not a graph engine.
+No LangGraph, no Teams, and no separate structured pre-chat diagnosis pipeline — the conversational chat agent is the only diagnosis path. A human is present for the entire investigate → act → approve sequence, driven entirely through chat, so there's no durable pause/resume mechanism or external approval channel to maintain.
 
 ## Folder structure
 
 ```
-nexus/
+radar/
 ├── src/                            # The application
 │   ├── main.py                     # FastAPI app, lifespan (DB/Redis/concurrency-cap setup)
 │   │
@@ -46,11 +55,13 @@ nexus/
 │   │   └── error_categories.py     # Canonical error categories + the human-action-only subset
 │   │
 │   ├── db/
-│   │   └── models.py               # SQLAlchemy models — single source of schema truth
+│   │   ├── models.py                # SQLAlchemy models — single source of schema truth
+│   │   └── rca.py                   # ProjectRCA read/write logic — plain queries, platform-agnostic
 │   │
 │   ├── gateway/
-│   │   ├── rbac.py                 # RBACGateway — per-tool-call permission gate + credential injection
-│   │   ├── vault.py                # Key Vault credential resolution → Redis cache
+│   │   ├── rbac.py                 # RBACGateway (the enforcement) + call_tool (routes in-process vs. remote)
+│   │   ├── tool_exec_auth.py       # Service-identity JWT for chat-backend <-> server.py
+│   │   ├── credential_resolution.py # client_secret resolution from WatchTower's public.Credential
 │   │   └── concurrency.py          # DistributedSemaphore — Redis-backed, shared across replicas
 │   │
 │   ├── intake/
@@ -58,27 +69,37 @@ nexus/
 │   │   └── batch_detection.py      # Built, currently unused (batch alerting switched off)
 │   │
 │   ├── mcp_servers/adf/
-│   │   ├── tools.py                # ADF tool implementations (the shared TOOL_REGISTRY)
-│   │   ├── auth.py                 # Azure credential construction
-│   │   └── server.py               # Stdio MCP server — NOT RBAC-gated, a known tracked gap
+│   │   ├── tools/                  # ADF tool implementations (the shared TOOL_REGISTRY)
+│   │   ├── schemas/                # 66-distinct-tool declarative specs, one file per resource kind
+│   │   ├── tool_search_tool.py     # Keyword-based tool retrieval + build_chat_tools (real FunctionTool wiring)
+│   │   └── auth.py                 # Azure credential construction
 │   │
 │   ├── notifications/
 │   │   ├── messages.py             # Notification body text (one template, not per-outcome)
 │   │   └── email.py                # Delivery via Microsoft Graph's sendMail
 │   │
-│   └── workflow/
-│       ├── state.py                # InvestigationState shape
-│       ├── context.py              # WorkflowContext — per-call dependencies (DB, Redis, actor)
-│       ├── diagnose.py             # run_diagnosis / apply_rerun / apply_denial — the orchestration
-│       └── nodes/
-│           ├── pre_check.py            # Cancellation short-circuit (the one hard pre-chat gate)
-│           ├── load_context.py         # Audit trail + prior-RCA context for loop-prevention
-│           ├── investigator.py         # The LLM agent — evidence gathering + structured RCA output
-│           ├── notifier.py             # Builds and fires the "needs review" notification
-│           ├── rerun.py                # Executes an approved rerun, polls its outcome
-│           └── handle_denial.py        # Records a denied fix
+│   ├── llm/                        # Platform-agnostic agent domain logic — tool-calling, state, execution
+│   │   ├── agent.py                # The conversational LLM turn (run/resume, approval handling)
+│   │   ├── tools.py                # Generic RCA tools (db/rca.py-backed) + build_tools_for_platform dispatcher
+│   │   ├── state.py / state_builder.py  # Shared state shape + reconstructing it from DB rows
+│   │   └── context.py              # Per-call dependencies (DB factory, Redis)
+│   │
+│   ├── chat/                       # Conversational transport — the only diagnosis path
+│   │   ├── router.py               # FastAPI endpoints
+│   │   ├── service.py              # Business logic behind each endpoint
+│   │   ├── thread_setup.py         # Creates the thread + seed message + notification at intake time
+│   │   ├── seed_message.py         # The templated (non-LLM) first-message text
+│   │   ├── history.py              # Converts stored messages → LLM input format
+│   │   ├── summarization.py        # Context-window compaction for long threads
+│   │   └── access.py / deps.py     # Auth/authorization checks
+│   │
+│   └── server.py                   # Separate deployable (own VM/subnet) — POST /tools/{tool_name}/call,
+│                                    # runs the SAME RBACGateway; never imported by main.py
 │
-├── migrations/                     # Alembic migrations (auto-generated + hand-fixed where needed)
+├── prisma/                          # This repo's own Prisma schema/migrations for the "radar"
+│                                    # Postgres schema (moved from watch-Tower 2026-08-04 — see
+│                                    # schema.prisma's header comment). `npm install && npx prisma
+│                                    # migrate deploy` to apply.
 ├── tests/                          # pytest suite
 ├── claude-desktop/                 # Standalone R&D tool exploring MCP + checkpoint/rollback —
 │                                    # separate venv, not part of src/, source for the future ADF tool port
@@ -92,30 +113,59 @@ nexus/
 │
 ├── docker-compose.yml
 ├── Dockerfile
-├── alembic.ini
+├── alembic.ini.retired
 └── pyproject.toml
 ```
 
 ## Getting started
 
+This backend's tables live inside WatchTower's own Postgres instance, in the `radar` schema
+(`prisma/schema.prisma`, right here in this repo, is the authoritative migration source —
+Alembic was used before 2026-07-29, then retired in favor of Prisma; those old migrations were
+kept for historical reference for a while and have since been deleted). Point `DATABASE_URL` at
+that same Postgres instance.
+
 ```bash
 poetry install
+npm install            # Prisma tooling only — see prisma/schema.prisma
 cp .env.example .env   # fill in real values — see config/settings.py for the full list
-poetry run alembic upgrade head
-PYTHONPATH=src poetry run uvicorn main:app --reload --app-dir src
+npx prisma migrate deploy   # applies this repo's own radar-schema migrations
+PYTHONPATH=src poetry run python -m uvicorn main:app --reload --app-dir src
 ```
 
 Or via Docker: `docker compose up --build`.
 
+### Tool-execution service (optional, off by default)
+
+`src/server.py` is a separate deployable — a standalone FastAPI app that runs the same
+`RBACGateway` (unchanged) that otherwise runs in-process. Leave
+`TOOL_EXEC_SERVICE_URL`/`TOOL_EXEC_ASSERTION_SECRET` unset (the default) for local/
+single-process dev — the chat backend then runs `RBACGateway` in-process exactly as before this
+existed, no extra service needed.
+
+To run it standalone (its own host/subnet in production; same machine on a different port for
+local testing):
+
+```bash
+TOOL_EXEC_ASSERTION_SECRET=<same value as the chat backend's> \
+  PYTHONPATH=src poetry run python -m uvicorn server:app --port 8100 --app-dir src
+```
+
+Then set on the chat backend's own `.env`: `TOOL_EXEC_SERVICE_URL=http://<host>:8100` and the
+same `TOOL_EXEC_ASSERTION_SECRET` — `gateway/rbac.py`'s `call_tool()` then routes every tool
+call over HTTP to it instead of running the gateway locally. In production, restrict inbound
+traffic on that host/port to the chat backend's own subnet only (NSG/security-group rule —
+infra-level, not something this code enforces).
+
 ## Tech stack
 
-FastAPI · SQLAlchemy (async) + Postgres (Neon in dev) · Redis (Upstash in dev) · OpenAI Agents SDK against Azure AI Foundry's v1 endpoint · Azure Key Vault + `azure-identity` · Alembic.
+FastAPI · SQLAlchemy (async) against WatchTower's own Postgres instance (`radar` schema; schema managed by this repo's own Prisma tooling, not Alembic) · Redis (Upstash in dev) · OpenAI Agents SDK against Azure AI Foundry's v1 endpoint · `azure-identity` + `azure-mgmt-datafactory` (per-project client/credential cache — see `mcp_servers/adf/client_cache.py`).
 
 ## Current status
 
-**Built:** backend foundation (no LangGraph/Teams, per-project Key Vault credentials), the full DB schema for the chat-product design (multi-user chat access, ad-hoc threads, chat memory/context-window management, multi-factory credentials), a distributed Redis-backed concurrency cap, classifier/dependency-check retirement (folded into the investigator agent's own tools), notification delivery code (Microsoft Graph email — wired but not yet actually sending, pending a real Entra ID app registration), and a security-review pass with fixes (a fail-open HMAC bug, a self-referential signature scheme).
+**Built:** backend foundation (no LangGraph/Teams; per-project ADF credentials resolved from WatchTower's own encrypted Credential table, no Key Vault), the full DB schema for the chat-product design (multi-user chat access, ad-hoc threads, chat memory/context-window management, multi-factory credentials), a distributed Redis-backed concurrency cap, classifier/dependency-check retirement (folded into the investigator agent's own tools), notification delivery code (Microsoft Graph email — wired but not yet actually sending, pending a real Entra ID app registration), and a security-review pass with fixes (a fail-open HMAC bug, a self-referential signature scheme).
 
-**Known, tracked, not yet fixed:** `mcp_servers/adf/server.py`'s stdio path bypasses RBAC entirely (needs a decision: gate it too, or restrict it to local-only); the 5 currently-seeded `rbac_permissions` rows have the wrong `requires_consent` tiering (deferred intentionally until the ADF tool port, when all ~27 tools get seeded at once).
+**Known, tracked, not yet fixed:** the 5 currently-seeded `rbac_permissions` rows have the wrong `requires_consent` tiering (deferred intentionally until the ADF tool port, when all ~27 tools get seeded at once).
 
 Full detail and the dated decision log: [`xyz/implementation_plan.md`](xyz/implementation_plan.md).
 
