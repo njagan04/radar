@@ -1,0 +1,255 @@
+// RADAR's own Prisma schema, targeting the "radar" Postgres schema inside the same
+// database WatchTower's own "public" schema lives in (one physical Postgres instance,
+// two independently-migrated schemas — same pattern as the pre-existing "freshdesk"
+// schema, just under Prisma's own migration tooling instead of raw SQL).
+//
+// Moved here from watch-Tower/prisma/radar/ (2026-08-04) — this repo is deployed as its
+// own separate service now, so it owns its own schema/migration history directly rather
+// than depending on watch-Tower's repo to run `prisma migrate` on its behalf. Nothing
+// under src/ queries through this generated client — radar's own SQLAlchemy models stay
+// the plain ORM definitions this backend actually runs against; this schema exists to
+// own DDL/migrations only, matching table/column names exactly so no query code changes.
+// The backend's own Alembic migrations are retired (see migrations.retired/RETIRED.md) in
+// favor of this being the one authoritative migration history.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/radar-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("RADAR_SCHEMA_DATABASE_URL")
+}
+
+model ProjectMetadata {
+  project  String  @id
+  platform String?
+
+  credentials       Credential[]
+  projectRca        ProjectRCA[]
+  failureEvents     FailureEvent[]
+  chatThreads       ChatThread[]
+  resourceSnapshots ResourceSnapshot[]
+
+  @@map("project_metadata")
+}
+
+model Credential {
+  id               BigInt  @id @default(autoincrement())
+  project          String
+  resource_group   String
+  factory_name     String
+  tenant_id        String
+  client_id        String
+  subscription_id  String
+
+  projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
+  failureEvents   FailureEvent[]
+
+  @@unique([project, factory_name], name: "uq_credentials_project_factory")
+  @@map("credentials")
+}
+
+// Row-Level Security enabled + FORCEd, policy scoped by `platform` — hand-added raw SQL in the
+// 20260804000002 migration (Prisma's schema DSL has no RLS/CREATE POLICY construct, same
+// reason ChatThread.claimed_by_user_id's cross-schema FK is hand-added rather than modeled
+// here). See that migration's comment for why it currently has zero practical effect (the app
+// connects as a Postgres superuser, which unconditionally bypasses RLS) until the app's DB
+// role is changed to a non-superuser one.
+model RBACPermission {
+  tool_name        String  @id
+  allowed          Boolean
+  requires_consent Boolean @default(true)
+  platform         String  @default("adf")
+
+  @@map("rbac_permissions")
+}
+
+model ProjectRCA {
+  id                     BigInt    @id @default(autoincrement())
+  pipeline_id            String
+  project                String
+  error_signature        String
+  error_category         String
+  root_cause             String?
+  fix_applied            String?
+  failure_count          Int       @default(1)
+  last_failure_timestamp DateTime? @db.Timestamptz
+  updated_at             DateTime? @db.Timestamptz
+
+  projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
+
+  @@unique([pipeline_id, project, error_signature], name: "uq_project_rca_pipeline_project_signature")
+  @@map("project_rca")
+}
+
+model AuditLog {
+  audit_id         BigInt   @id @default(autoincrement())
+  investigation_id String?
+  // Nullable — not every audited event happens inside a chat thread (e.g. thread_setup's
+  // "notification_ready" fires at intake, and this column wasn't backfilled for pre-existing
+  // rows, see the migration). Not modeled as a Prisma relation into ChatThread on purpose —
+  // the FK itself is hand-added as raw SQL in the migration (same reasoning as
+  // RBACPermission's RLS policy elsewhere in this file: Prisma's relation DSL doesn't need to
+  // model every FK for the raw SQL to be real and enforced).
+  thread_id        String?  @db.Uuid
+  pipeline_name    String
+  project          String
+  platform         String
+  timestamp        DateTime @db.Timestamptz
+  event_type       String
+  // WatchTower's public."User".id — never an email. Nullable: system-originated events
+  // (intake, the diagnosis pipeline) have no real user to attribute to.
+  user_id          String?  @db.Uuid
+  detail           Json?
+
+  failureEvent FailureEvent? @relation(fields: [investigation_id], references: [investigation_id])
+
+  @@index([investigation_id])
+  @@index([thread_id])
+  @@map("audit_log")
+}
+
+model FailureEvent {
+  investigation_id String   @id
+  project          String
+  platform         String
+  pipeline_name    String
+  factory_name     String?
+  run_status       String
+  start_time       DateTime @db.Timestamptz
+  end_time         DateTime? @db.Timestamptz
+  last_error       String?
+  error_detail     Json?
+  trigger_type     String?
+  seed_message     String?
+  resolved_thread_id String? @db.Uuid
+  seen_at          DateTime? @db.Timestamptz
+  created_at       DateTime @db.Timestamptz
+  updated_at       DateTime? @db.Timestamptz
+
+  projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
+  credential      Credential?     @relation(fields: [project, factory_name], references: [project, factory_name])
+  auditLogs       AuditLog[]
+  chatThread      ChatThread?     @relation("FailureEventThread")
+  resolvedThread  ChatThread?     @relation("FailureEventResolvedThread", fields: [resolved_thread_id], references: [thread_id])
+
+  @@index([project, pipeline_name, created_at], name: "ix_failure_events_project_pipeline_created")
+  @@map("failure_events")
+}
+
+model ChatThread {
+  thread_id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project                       String
+  investigation_id              String?   @unique
+  title                         String?
+  claimed_by_user_id            String?   @db.Uuid
+  is_deleted                    Boolean   @default(false)
+  context_summary               String?
+  summarized_through_timestamp  DateTime? @db.Timestamptz
+  pending_tool_approval         Json?
+  created_at                    DateTime  @db.Timestamptz
+  updated_at                    DateTime? @db.Timestamptz
+
+  projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
+  failureEvent    FailureEvent?   @relation("FailureEventThread", fields: [investigation_id], references: [investigation_id])
+  resolvesFailureEvent FailureEvent? @relation("FailureEventResolvedThread")
+  messages        ChatMessage[]
+  analytics       ChatAnalytics[]
+
+  @@index([project])
+  @@index([claimed_by_user_id])
+  @@map("chat_threads")
+}
+
+model ChatMessage {
+  id         BigInt   @id @default(autoincrement())
+  thread_id  String   @db.Uuid
+  role       String
+  content    String
+  tool_calls Json?
+  created_at DateTime @db.Timestamptz
+
+  chatThread ChatThread @relation(fields: [thread_id], references: [thread_id])
+  feedback   MessageFeedback[]
+
+  @@index([thread_id, created_at], name: "ix_chat_messages_thread_created")
+  @@map("chat_messages")
+}
+
+model ChatAnalytics {
+  id              BigInt   @id @default(autoincrement())
+  thread_id       String   @db.Uuid
+  user_id         String?  @db.Uuid
+  project         String
+  platform        String
+  model           String
+  input_tokens    Int      @default(0)
+  output_tokens   Int      @default(0)
+  cached_tokens   Int      @default(0)
+  estimated_cost  Float    @default(0.0)
+  created_at      DateTime @db.Timestamptz
+
+  chatThread ChatThread @relation(fields: [thread_id], references: [thread_id])
+
+  @@index([thread_id])
+  @@index([user_id])
+  @@map("chat_analytics")
+}
+
+model MessageFeedback {
+  id         BigInt   @id @default(autoincrement())
+  message_id BigInt
+  user_id    String   @db.Uuid
+  rating     String
+  created_at DateTime @db.Timestamptz
+  updated_at DateTime? @db.Timestamptz
+
+  message ChatMessage @relation(fields: [message_id], references: [id])
+
+  @@unique([message_id, user_id], name: "uq_message_feedback_message_user")
+  @@map("message_feedback")
+}
+
+model ResourceSnapshotBlob {
+  hash       String @id
+  definition Json
+
+  resourceSnapshots ResourceSnapshot[]
+
+  @@map("resource_snapshot_blobs")
+}
+
+model ResourceSnapshot {
+  id             BigInt   @id @default(autoincrement())
+  project        String
+  kind           String
+  resource_name  String
+  sequence       Int
+  state_name     String
+  action         String
+  reason         String
+  change_summary String?
+  blob_hash      String?
+  created_at     DateTime @db.Timestamptz
+
+  projectMetadata ProjectMetadata        @relation(fields: [project], references: [project])
+  blob            ResourceSnapshotBlob?  @relation(fields: [blob_hash], references: [hash])
+  cursors         ResourceSnapshotCursor[] @relation("fk_resource_snapshot_cursor_points_into_snapshots")
+
+  @@unique([project, kind, resource_name, sequence], name: "uq_resource_snapshots_identity")
+  @@map("resource_snapshots")
+}
+
+model ResourceSnapshotCursor {
+  project          String
+  kind             String
+  resource_name    String
+  current_sequence Int
+
+  resourceSnapshot ResourceSnapshot @relation("fk_resource_snapshot_cursor_points_into_snapshots", fields: [project, kind, resource_name, current_sequence], references: [project, kind, resource_name, sequence])
+
+  @@id([project, kind, resource_name])
+  @@map("resource_snapshot_cursor")
+}
