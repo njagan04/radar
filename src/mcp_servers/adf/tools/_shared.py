@@ -10,13 +10,13 @@ from datetime import timedelta, timezone
 from azure.mgmt.datafactory import DataFactoryManagementClient
 import azure.mgmt.datafactory.models as _adf_models
 
-from mcp_servers.adf.auth import get_credential
+from mcp_servers.adf import client_cache
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _client(tenant_id: str, client_id: str, client_secret: str, subscription_id: str) -> DataFactoryManagementClient:
-    return DataFactoryManagementClient(get_credential(tenant_id, client_id, client_secret), subscription_id)
+    return client_cache.get_client(tenant_id, client_id, client_secret, subscription_id)
 
 
 def _to_ist(value) -> str | None:
