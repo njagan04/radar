@@ -2,13 +2,12 @@
 # agent via llm/tools.py's record_diagnosis_outcome/check_known_fix docstrings so the LLM
 # stays consistent (e.g. always "timeout", never "Timeout"/"connection_timeout" as free-form
 # variants), which is what makes check_known_fix's cross-pipeline error_category matching
-# actually work. Not enforced as a hard schema constraint — the agent decides everything, per
-# this codebase's established philosophy — just strongly guided.
+# actually work. Not enforced as a hard schema constraint — just strongly guided.
 ERROR_CATEGORIES: list[str] = [
     "oom",
     "timeout",
     "credential_expired",
-    "permissions",           # service principal lacks RBAC rights (not expired, just missing)
+    "permissions",  # service principal lacks RBAC rights (not expired, just missing)
     "network",
     "data_quality",
     "schema_drift",
@@ -17,13 +16,13 @@ ERROR_CATEGORIES: list[str] = [
     "rate_limit",
     "config",
     "platform_outage",
-    "business_logic",        # TO_IMPLEMENT: application-level failures (bad params, assertion errors)
-    "cancelled",             # pipeline was cancelled (user/system/dependency)
+    "business_logic",  # TO_IMPLEMENT: application-level failures (bad params, assertion errors)
+    "cancelled",  # pipeline was cancelled (user/system/dependency)
     "unknown",
 ]
 
-# Intake-time categorization (2026-08-06) — a small, deliberately conservative set of known
-# ADF error-code substrings, used ONLY to give a brand-new ProjectRCA row a starting category
+# Intake-time categorization — a small, deliberately conservative set of known ADF
+# error-code substrings, used only to give a brand-new ProjectRCA row a starting category
 # before any human has diagnosed it. record_diagnosis_outcome (llm/tools.py) unconditionally
 # overwrites error_category on every real diagnosis, so a wrong/unknown guess here self-heals
 # the first time someone actually chats about it — this never needs to be exhaustive.
@@ -64,4 +63,3 @@ def categorize_error_code(error_code: str | None) -> str:
         if hint in lowered:
             return category
     return "unknown"
-
