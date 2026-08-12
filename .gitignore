@@ -11,8 +11,8 @@ __pycache__/
 # ── Virtual environment ───────────────────────────────────────────────────────
 .venv/
 
-# ── Poetry ────────────────────────────────────────────────────────────────────
-# poetry.lock IS committed — do not add it here
+# ── uv ────────────────────────────────────────────────────────────────────────
+# uv.lock IS committed — do not add it here
 
 # ── pytest ────────────────────────────────────────────────────────────────────
 .pytest_cache/
@@ -34,3 +34,5 @@ xyz/
 # tests/
 watch-Tower/
 node_modules/
+
+.ruff_cache/
