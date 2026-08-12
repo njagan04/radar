@@ -30,7 +30,6 @@ model ProjectMetadata {
   projectRca        ProjectRCA[]
   failureEvents     FailureEvent[]
   chatThreads       ChatThread[]
-  resourceSnapshots ResourceSnapshot[]
 
   @@map("project_metadata")
 }
@@ -212,44 +211,3 @@ model MessageFeedback {
   @@map("message_feedback")
 }
 
-model ResourceSnapshotBlob {
-  hash       String @id
-  definition Json
-
-  resourceSnapshots ResourceSnapshot[]
-
-  @@map("resource_snapshot_blobs")
-}
-
-model ResourceSnapshot {
-  id             BigInt   @id @default(autoincrement())
-  project        String
-  kind           String
-  resource_name  String
-  sequence       Int
-  state_name     String
-  action         String
-  reason         String
-  change_summary String?
-  blob_hash      String?
-  created_at     DateTime @db.Timestamptz
-
-  projectMetadata ProjectMetadata        @relation(fields: [project], references: [project])
-  blob            ResourceSnapshotBlob?  @relation(fields: [blob_hash], references: [hash])
-  cursors         ResourceSnapshotCursor[] @relation("fk_resource_snapshot_cursor_points_into_snapshots")
-
-  @@unique([project, kind, resource_name, sequence], name: "uq_resource_snapshots_identity")
-  @@map("resource_snapshots")
-}
-
-model ResourceSnapshotCursor {
-  project          String
-  kind             String
-  resource_name    String
-  current_sequence Int
-
-  resourceSnapshot ResourceSnapshot @relation("fk_resource_snapshot_cursor_points_into_snapshots", fields: [project, kind, resource_name, current_sequence], references: [project, kind, resource_name, sequence])
-
-  @@id([project, kind, resource_name])
-  @@map("resource_snapshot_cursor")
-}
