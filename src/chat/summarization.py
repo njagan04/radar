@@ -5,6 +5,7 @@ recent tail raw, hand both to the next turn). Runs synchronously, but only at th
 the turn that actually crosses the budget — not on every turn, not as a background job racing
 the conversation.
 """
+
 import logging
 
 import tiktoken
@@ -26,7 +27,9 @@ _ENCODING = tiktoken.get_encoding("cl100k_base")
 # turns before the first summarization pass.
 _TOKEN_BUDGET = 10_000
 
-_client = AsyncOpenAI(base_url=settings.azure_openai_v1_base_url, api_key=settings.azure_openai_api_key)
+_client = AsyncOpenAI(
+    base_url=settings.azure_openai_v1_base_url, api_key=settings.azure_openai_api_key
+)
 
 
 def count_tokens(text: str) -> int:
@@ -41,7 +44,8 @@ async def maybe_summarize(db: AsyncSession, thread: ChatThread) -> None:
         select(ChatMessage)
         .where(
             ChatMessage.thread_id == thread.thread_id,
-            ChatMessage.created_at > (thread.summarized_through_timestamp or thread.created_at),
+            ChatMessage.created_at
+            > (thread.summarized_through_timestamp or thread.created_at),
         )
         .order_by(ChatMessage.created_at)
     )
@@ -67,7 +71,10 @@ async def maybe_summarize(db: AsyncSession, thread: ChatThread) -> None:
         )
         new_summary = response.choices[0].message.content
     except Exception:
-        logger.exception("Summarization pass failed for thread_id=%s — leaving context_summary unchanged", thread.thread_id)
+        logger.exception(
+            "Summarization pass failed for thread_id=%s — leaving context_summary unchanged",
+            thread.thread_id,
+        )
         return
 
     thread.context_summary = new_summary
