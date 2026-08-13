@@ -6,7 +6,8 @@ record_diagnosis_outcome) so this data-access logic is reusable by anything that
 Agents SDK. Genuinely platform-agnostic: ProjectRCA is keyed by (pipeline_id, project,
 error_signature), none of which are ADF-specific concepts.
 """
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,10 @@ from db.models import ProjectRCA
 
 
 async def find_known_fix(
-    db: AsyncSession, pipeline_id: str, project: str, error_category: str | None = None,
+    db: AsyncSession,
+    pipeline_id: str,
+    project: str,
+    error_category: str | None = None,
 ) -> tuple[list[ProjectRCA], ProjectRCA | None]:
     """Returns (this pipeline's own RCA history, a cross-pipeline match sharing error_category
     if one was requested and found)."""
@@ -60,7 +64,7 @@ async def record_diagnosis_outcome(
     fix_applied only for whichever of those were actually passed (so a later call can add
     detail without clobbering earlier fields with None). Returns (the row, whether it was newly
     created) — does NOT commit; caller owns the transaction."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     existing_result = await db.execute(
         select(ProjectRCA).where(
             ProjectRCA.pipeline_id == pipeline_id,
