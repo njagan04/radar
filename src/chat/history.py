@@ -8,6 +8,7 @@ easy to silently drift from as `openai-agents` updates). The model only needs co
 what was SAID, not what was LOOKED UP — each turn re-derives evidence via its own tool calls
 if it needs to. This is a deliberate simplification, not an oversight.
 """
+
 from db.models import ChatMessage
 
 
