@@ -15,6 +15,7 @@ SentenceTransformer(...) at module load would force a ~90MB model load (and a ne
 a cold cache) onto every test run and CI invocation, whether or not that run ever actually
 embeds anything.
 """
+
 import asyncio
 import logging
 

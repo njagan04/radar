@@ -1,18 +1,9 @@
 """
 InvestigationState — the shape every chat turn needs, and the only code that builds it.
-Merged from state.py (just the TypedDict) + state_builder.py (its builders) since neither
-ever had another reason to exist apart from the other: the type had exactly one real
-constructor, and the constructor had nowhere else to put its return type. Kept as its own
-file, separate from llm/tools.py, since "what data does a turn need" and "what tools does a
-turn get" are genuinely different concerns — tools.py consumes this shape, it doesn't define it.
 
-Rebuilt fresh from DB rows every turn (cheap, all indexed lookups) — there's no automatic
-pre-chat pipeline holding state in memory anymore (workflow/diagnose.py's run_diagnosis
-retired 2026-07-28, chat is now the only diagnosis path). Moved here from workflow/state.py
-at that same point, trimming the fields only that retired pipeline ever set/read
-(error_category, prior_rca_context, rca_id, investigation_summary, requires_human_action,
-needs_approval, approval_action, proposed_at).
+Rebuilt fresh from DB rows every turn (cheap, all indexed lookups).
 """
+
 from datetime import datetime
 from typing import TypedDict
 
@@ -24,9 +15,8 @@ from db.models import ChatThread, Credential, FailureEvent, ProjectMetadata
 
 class InvestigationState(TypedDict):
     investigation_id: str | None
-    # The real ChatThread.thread_id, passed explicitly to RBACGateway/AuditLog (2026-08-06 fix)
-    # instead of being derived from anything else — every failure-triggered chat call needs
-    # its own real thread_id on the AuditLog row, same as an ad-hoc call.
+    # The real ChatThread.thread_id, passed explicitly to RBACGateway/AuditLog — every chat
+    # call needs its own real thread_id on the AuditLog row.
     thread_id: str | None
     project: str
     platform: str
@@ -35,7 +25,9 @@ class InvestigationState(TypedDict):
     start_time: datetime
     end_time: datetime | None
     last_error: str | None
-    error_detail: dict | None  # raw WatchTower payload; the chat agent enriches on demand via its own tool calls
+    error_detail: (
+        dict | None
+    )  # raw WatchTower payload; the chat agent enriches on demand via its own tool calls
     trigger_type: str | None
     thread_status: str  # "running" | "paused" | "failed" | "completed"
     # --- non-secret factory identifiers, sourced from Credential (not a secret,
@@ -55,7 +47,9 @@ class InvestigationState(TypedDict):
 AD_HOC_PIPELINE_SENTINEL = "(ad-hoc)"
 
 
-def build_initial_state(inv: FailureEvent, factory: Credential, thread_id: str | None = None) -> InvestigationState:
+def build_initial_state(
+    inv: FailureEvent, factory: Credential, thread_id: str | None = None
+) -> InvestigationState:
     return {
         "investigation_id": inv.investigation_id,
         "thread_id": thread_id,
@@ -79,10 +73,7 @@ def build_initial_state(inv: FailureEvent, factory: Credential, thread_id: str |
 
 
 async def get_credential(db, project: str) -> Credential | None:
-    """
-    Current scope: a project has exactly one platform instance, so the first matching row is
-    the right one. Revisit once multi-factory-per-project is actually built.
-    """
+    """A project has exactly one platform instance, so the first matching row is the right one."""
     result = await db.execute(select(Credential).where(Credential.project == project))
     return result.scalars().first()
 
@@ -93,10 +84,14 @@ async def build_chat_state(db: AsyncSession, thread: ChatThread) -> Investigatio
     return await _build_ad_hoc_state(db, thread)
 
 
-async def _build_failure_triggered_state(db: AsyncSession, thread: ChatThread) -> InvestigationState:
+async def _build_failure_triggered_state(
+    db: AsyncSession, thread: ChatThread
+) -> InvestigationState:
     inv = await db.get(FailureEvent, thread.investigation_id)
     if inv is None:
-        raise RuntimeError(f"ChatThread {thread.thread_id} points at a missing FailureEvent")
+        raise RuntimeError(
+            f"ChatThread {thread.thread_id} points at a missing FailureEvent"
+        )
     factory = await get_credential(db, inv.project)
     if factory is None:
         raise RuntimeError(f"credentials row missing for project='{inv.project}'")
@@ -104,7 +99,9 @@ async def _build_failure_triggered_state(db: AsyncSession, thread: ChatThread) -
     return build_initial_state(inv, factory, thread_id=thread.thread_id)
 
 
-async def _build_ad_hoc_state(db: AsyncSession, thread: ChatThread) -> InvestigationState:
+async def _build_ad_hoc_state(
+    db: AsyncSession, thread: ChatThread
+) -> InvestigationState:
     """
     No FailureEvent to source failure-specific fields from — pipeline_name/run_status/
     error_detail etc. are deliberately absent/sentinel. llm/agent.py's own system-prompt
@@ -115,7 +112,9 @@ async def _build_ad_hoc_state(db: AsyncSession, thread: ChatThread) -> Investiga
         raise RuntimeError(f"credentials row missing for project='{thread.project}'")
 
     platform_result = await db.execute(
-        select(ProjectMetadata.platform).where(ProjectMetadata.project == thread.project)
+        select(ProjectMetadata.platform).where(
+            ProjectMetadata.project == thread.project
+        )
     )
     platform = platform_result.scalar_one_or_none()
 
