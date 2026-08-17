@@ -6,6 +6,7 @@ retrieval-selected) lives in mcp_servers/adf/tool_search_tool.py — this module
 anything ADF-specific, so that adding Synapse/Databricks/Fabric later only means registering
 another builder below, not touching this file's own logic.
 """
+
 import logging
 
 from agents import set_default_openai_client, set_tracing_disabled
@@ -38,18 +39,25 @@ set_tracing_disabled(True)  # no OpenAI platform account to receive Agents SDK t
 # conversation, just without platform-specific tool access. Imported lazily (function-local,
 # not top-level) so this module never has to import anything ADF-specific at module load time.
 async def build_tools_for_platform(
-    platform: str, state: InvestigationState, ctx: WorkflowContext, message: str, user_id: str | None,
+    platform: str,
+    state: InvestigationState,
+    ctx: WorkflowContext,
+    message: str,
+    user_id: str | None,
 ) -> list:
     from mcp_servers.rca.tools import build_rca_tools
+
     custom_tools = build_rca_tools(state, ctx, user_id)
 
     if platform == "adf":
         from mcp_servers.adf.tool_search_tool import build_chat_tools
+
         platform_tools = await build_chat_tools(state, ctx, message, user_id)
     else:
         logger.warning(
             "No tool set registered for platform=%r — proceeding with only the generic RCA "
-            "tools (only 'adf' is implemented today)", platform,
+            "tools (only 'adf' is implemented today)",
+            platform,
         )
         platform_tools = []
 
