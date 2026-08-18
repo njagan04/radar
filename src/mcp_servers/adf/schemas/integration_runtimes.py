@@ -2,7 +2,8 @@
 integration_runtimes.py's per-kind layout. No generic-dispatch operations here: an IR has no
 versionable definition (no create/update/rollback/checkpoint concept applies), just
 running/stopped runtime state — so both tools are always-distinct, registry_tool_name == name."""
-from mcp_servers.adf.schemas.base import ADFToolSpec, REASON_PROP, schema
+
+from mcp_servers.adf.schemas.base import REASON_PROP, ADFToolSpec, schema
 
 TOOLS = [
     ADFToolSpec(
@@ -15,7 +16,10 @@ TOOLS = [
             "types). Use this before start_integration_runtime to check whether starting it is even "
             "applicable."
         ),
-        params_json_schema=schema({"integration_runtime_name": {"type": "string"}}, ["integration_runtime_name"]),
+        params_json_schema=schema(
+            {"integration_runtime_name": {"type": "string"}},
+            ["integration_runtime_name"],
+        ),
     ),
     ADFToolSpec(
         name="start_integration_runtime",
@@ -27,9 +31,12 @@ TOOLS = [
             "IRs — no remote-start API exists; that's human-only. Only call this after "
             "get_integration_runtime_status confirms the IR is a managed type and is Stopped."
         ),
-        params_json_schema=schema({
-            "integration_runtime_name": {"type": "string"},
-            "reason": REASON_PROP,
-        }, ["integration_runtime_name", "reason"]),
+        params_json_schema=schema(
+            {
+                "integration_runtime_name": {"type": "string"},
+                "reason": REASON_PROP,
+            },
+            ["integration_runtime_name", "reason"],
+        ),
     ),
 ]

@@ -6,7 +6,8 @@ operations (create/list/update/rollback/back/forward/list_snapshots/get_definiti
 routed through TOOL_REGISTRY's resource_type-parameterized functions) or one of pipeline's own
 10 always-distinct tools (registry_tool_name == name, resource_type=None).
 """
-from mcp_servers.adf.schemas.base import ADFToolSpec, CONFIRM_DELETE_PROP, REASON_PROP, STATE_NAME_PROP, schema
+
+from mcp_servers.adf.schemas.base import REASON_PROP, ADFToolSpec, schema
 
 TOOLS = [
     ADFToolSpec(
@@ -23,7 +24,9 @@ TOOLS = [
             "service it touches — usually the concrete evidence for WHY it failed. It's also the editable "
             "structure required as input to update_pipeline_definition once a fix is decided."
         ),
-        params_json_schema=schema({"pipeline_name": {"type": "string"}}, ["pipeline_name"]),
+        params_json_schema=schema(
+            {"pipeline_name": {"type": "string"}}, ["pipeline_name"]
+        ),
     ),
     ADFToolSpec(
         name="create_pipeline",
@@ -32,20 +35,24 @@ TOOLS = [
         name_kwarg="pipeline_name",
         description=(
             "Creates a brand-new pipeline. Fails with an explicit error if a pipeline with this name "
-            "already exists — use update_pipeline_definition to modify an existing one instead. Pushes a "
-            "\"did not exist\" marker onto this pipeline's history stack, so rollback_pipeline_definition "
-            "can undo the creation (delete it) later. `definition` accepts either the flat shape "
+            "already exists — use update_pipeline_definition to modify an existing one instead. "
+            "`definition` accepts either the flat shape "
             "get_pipeline_definition_raw uses, or the ARM/Data-Factory-Studio export shape "
-            "({\"name\": ..., \"properties\": {\"activities\": [...], ...}}) — if a \"properties\" key is "
+            '({"name": ..., "properties": {"activities": [...], ...}}) — if a "properties" key is '
             "present, its contents are used and the wrapper is discarded. `pipeline_name` (not the JSON's "
-            "own \"name\" field, if present) determines the actual name created."
+            'own "name" field, if present) determines the actual name created.'
         ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "definition": {"type": "object", "description": "Pipeline definition JSON."},
-            "reason": REASON_PROP,
-            "state_name": STATE_NAME_PROP,
-        }, ["pipeline_name", "definition", "reason"]),
+        params_json_schema=schema(
+            {
+                "pipeline_name": {"type": "string"},
+                "definition": {
+                    "type": "object",
+                    "description": "Pipeline definition JSON.",
+                },
+                "reason": REASON_PROP,
+            },
+            ["pipeline_name", "definition", "reason"],
+        ),
     ),
     ADFToolSpec(
         name="list_pipelines",
@@ -64,90 +71,19 @@ TOOLS = [
             "Overwrites a pipeline's full definition to apply a concrete fix (e.g. inserting a Wait "
             "activity, adjusting a timeout/retry policy). ADF has no partial-patch API — this replaces the "
             "entire activities array, so `definition` must be get_pipeline_definition_raw's output with "
-            "edits applied. The pre-change definition is pushed onto this pipeline's named history stack "
-            "automatically, so rollback_pipeline_definition can jump back to it later by name (see "
-            "list_pipeline_snapshots)."
+            "edits applied."
         ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "definition": {"type": "object", "description": "Modified output of get_pipeline_definition_raw."},
-            "reason": REASON_PROP,
-            "change_summary": {"type": "string", "description": "One-line human-readable diff of what changed."},
-            "state_name": STATE_NAME_PROP,
-        }, ["pipeline_name", "definition", "reason", "change_summary"]),
-    ),
-    ADFToolSpec(
-        name="list_pipeline_snapshots",
-        registry_tool_name="list_resource_snapshots",
-        resource_type="pipeline",
-        name_kwarg="pipeline_name",
-        description=(
-            "Lists every named state saved in this pipeline's history (state_name, timestamp, reason, "
-            "change_summary), oldest first. Query this to see what's available before calling "
-            "rollback_pipeline_definition with a specific state_name."
+        params_json_schema=schema(
+            {
+                "pipeline_name": {"type": "string"},
+                "definition": {
+                    "type": "object",
+                    "description": "Modified output of get_pipeline_definition_raw.",
+                },
+                "reason": REASON_PROP,
+            },
+            ["pipeline_name", "definition", "reason"],
         ),
-        params_json_schema=schema({"pipeline_name": {"type": "string"}}, ["pipeline_name"]),
-    ),
-    ADFToolSpec(
-        name="rollback_pipeline_definition",
-        registry_tool_name="rollback_resource_definition",
-        resource_type="pipeline",
-        name_kwarg="pipeline_name",
-        description=(
-            "Jumps directly to a specific named state from list_pipeline_snapshots, wherever it sits in "
-            "history — nothing is ever deleted, so you can move back and then forward again by name. For "
-            "simple one-step undo/redo without needing a state_name, use back_pipeline_definition / "
-            "forward_pipeline_definition instead. Use this (not back_pipeline_definition) for any general "
-            "\"roll back\"/\"revert\"/\"undo the damage\" request, even if the message also says "
-            "\"previous version\" — reserve back_pipeline_definition specifically for \"one step back\"/"
-            "\"go back one version\" wording. If the target state predates the pipeline's creation, this "
-            "returns requires_confirmation instead of deleting — ask the human, then re-call with "
-            "confirm_delete=true."
-        ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "reason": REASON_PROP,
-            "state_name": {"type": "string", "description": "Name of the state to jump to, from list_pipeline_snapshots."},
-            "confirm_delete": CONFIRM_DELETE_PROP,
-        }, ["pipeline_name", "reason", "state_name"]),
-    ),
-    ADFToolSpec(
-        name="back_pipeline_definition",
-        registry_tool_name="back_resource_definition",
-        resource_type="pipeline",
-        name_kwarg="pipeline_name",
-        description=(
-            "Steps the pipeline's definition back exactly ONE checkpoint through its history, "
-            "like `git checkout HEAD~1` — the history log itself is untouched, only which checkpoint the "
-            "live pipeline currently matches moves. Use for \"go back one version\"/\"step back\""
-            "/\"undo the last change\" wording specifically — for reverting to an arbitrary named "
-            "checkpoint or a general \"roll back\"/\"revert\" request, use rollback_pipeline_definition "
-            "instead. Call forward_pipeline_definition to step forward again; repeated back/forward calls "
-            "walk the log correctly either direction. If the step lands before the pipeline "
-            "existed, this returns requires_confirmation instead of deleting — ask the human, then "
-            "re-call with confirm_delete=true."
-        ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "reason": REASON_PROP,
-            "confirm_delete": CONFIRM_DELETE_PROP,
-        }, ["pipeline_name", "reason"]),
-    ),
-    ADFToolSpec(
-        name="forward_pipeline_definition",
-        registry_tool_name="forward_resource_definition",
-        resource_type="pipeline",
-        name_kwarg="pipeline_name",
-        description=(
-            "Steps the pipeline's definition forward exactly ONE checkpoint through its "
-            "history — the mirror of back_pipeline_definition. Only available after a previous back step; "
-            "returns no_later_state_available if the cursor is already at the newest checkpoint."
-        ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "reason": REASON_PROP,
-            "confirm_delete": CONFIRM_DELETE_PROP,
-        }, ["pipeline_name", "reason"]),
     ),
     ADFToolSpec(
         name="get_activity_run_error",
@@ -160,10 +96,16 @@ TOOLS = [
             "from get_activity_run_history (aggregated failure-count summary, no error text) and "
             "list_activity_runs (lightweight listing, no error detail)."
         ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "event_timestamp": {"type": "string", "description": "ISO-8601 timestamp from the failure event"},
-        }, ["pipeline_name", "event_timestamp"]),
+        params_json_schema=schema(
+            {
+                "pipeline_name": {"type": "string"},
+                "event_timestamp": {
+                    "type": "string",
+                    "description": "ISO-8601 timestamp from the failure event",
+                },
+            },
+            ["pipeline_name", "event_timestamp"],
+        ),
     ),
     ADFToolSpec(
         name="get_pipeline_run_status",
@@ -182,10 +124,13 @@ TOOLS = [
             "Fetch recent run history for a pipeline — pipeline-level (when it ran, overall "
             "success/fail per run), not activity-level."
         ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "days": {"type": "integer", "default": 7},
-        }, ["pipeline_name"]),
+        params_json_schema=schema(
+            {
+                "pipeline_name": {"type": "string"},
+                "days": {"type": "integer", "default": 7},
+            },
+            ["pipeline_name"],
+        ),
     ),
     ADFToolSpec(
         name="get_activity_run_history",
@@ -197,10 +142,13 @@ TOOLS = [
             "failure counts and last error code per activity — useful for spotting recurring failures. "
             "Does NOT return the actual error text for a failure — use get_activity_run_error for that."
         ),
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "days": {"type": "integer", "default": 7},
-        }, ["pipeline_name"]),
+        params_json_schema=schema(
+            {
+                "pipeline_name": {"type": "string"},
+                "days": {"type": "integer", "default": 7},
+            },
+            ["pipeline_name"],
+        ),
     ),
     ADFToolSpec(
         name="get_pipeline_definition",
@@ -213,7 +161,9 @@ TOOLS = [
             "dataset/linked service it reads or writes, or a query/expression it runs, use "
             "get_pipeline_definition_raw instead."
         ),
-        params_json_schema=schema({"pipeline_name": {"type": "string"}}, ["pipeline_name"]),
+        params_json_schema=schema(
+            {"pipeline_name": {"type": "string"}}, ["pipeline_name"]
+        ),
     ),
     ADFToolSpec(
         name="rerun_pipeline",
@@ -221,10 +171,13 @@ TOOLS = [
         resource_type=None,
         name_kwarg=None,
         description="Trigger a new run of a pipeline.",
-        params_json_schema=schema({
-            "pipeline_name": {"type": "string"},
-            "parameters": {"type": "object"},
-        }, ["pipeline_name"]),
+        params_json_schema=schema(
+            {
+                "pipeline_name": {"type": "string"},
+                "parameters": {"type": "object"},
+            },
+            ["pipeline_name"],
+        ),
     ),
     ADFToolSpec(
         name="list_activity_runs",
@@ -236,10 +189,13 @@ TOOLS = [
             "activity_run_id for each. Deliberately lightweight: does NOT include input/output — call "
             "get_activity_run_io with a specific activity_run_id from this list for that."
         ),
-        params_json_schema=schema({
-            "run_id": {"type": "string"},
-            "days": {"type": "integer", "default": 30},
-        }, ["run_id"]),
+        params_json_schema=schema(
+            {
+                "run_id": {"type": "string"},
+                "days": {"type": "integer", "default": 30},
+            },
+            ["run_id"],
+        ),
     ),
     ADFToolSpec(
         name="get_activity_run_io",
@@ -251,11 +207,14 @@ TOOLS = [
             "error, but the actual resolved input parameters and captured output ADF recorded for that "
             "exact execution."
         ),
-        params_json_schema=schema({
-            "activity_run_id": {"type": "string"},
-            "run_id": {"type": "string"},
-            "days": {"type": "integer", "default": 30},
-        }, ["activity_run_id", "run_id"]),
+        params_json_schema=schema(
+            {
+                "activity_run_id": {"type": "string"},
+                "run_id": {"type": "string"},
+                "days": {"type": "integer", "default": 30},
+            },
+            ["activity_run_id", "run_id"],
+        ),
     ),
     ADFToolSpec(
         name="list_pipeline_runs",
@@ -279,6 +238,8 @@ TOOLS = [
             "this directly when the user wants a running execution stopped — do not call "
             "list_pipeline_runs first to search for it."
         ),
-        params_json_schema=schema({"run_id": {"type": "string"}, "reason": REASON_PROP}, ["run_id", "reason"]),
+        params_json_schema=schema(
+            {"run_id": {"type": "string"}, "reason": REASON_PROP}, ["run_id", "reason"]
+        ),
     ),
 ]
