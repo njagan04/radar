@@ -6,6 +6,7 @@ format (MD5 EVP_BytesToKey key/IV derivation, AES-256-CBC). Ported to Python sin
 has no JS runtime — verified byte-for-byte against a real encrypted row live (matches the
 plaintext exactly).
 """
+
 import base64
 import hashlib
 import json
@@ -13,13 +14,15 @@ import json
 from Crypto.Cipher import AES
 
 
-def _evp_bytes_to_key(password: bytes, salt: bytes, key_len: int, iv_len: int) -> tuple[bytes, bytes]:
+def _evp_bytes_to_key(
+    password: bytes, salt: bytes, key_len: int, iv_len: int
+) -> tuple[bytes, bytes]:
     derived = b""
     block = b""
     while len(derived) < key_len + iv_len:
         block = hashlib.md5(block + password + salt).digest()
         derived += block
-    return derived[:key_len], derived[key_len:key_len + iv_len]
+    return derived[:key_len], derived[key_len : key_len + iv_len]
 
 
 def decrypt_cryptojs_aes(ciphertext_b64: str, passphrase: str) -> str:
@@ -33,5 +36,5 @@ def decrypt_cryptojs_aes(ciphertext_b64: str, passphrase: str) -> str:
     key, iv = _evp_bytes_to_key(passphrase.encode("utf-8"), salt, key_len=32, iv_len=16)
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded = cipher.decrypt(ciphertext)
-    plaintext = padded[:-padded[-1]].decode("utf-8")
+    plaintext = padded[: -padded[-1]].decode("utf-8")
     return json.loads(plaintext)

@@ -19,10 +19,12 @@ cap — a real incident correlating many failures, many humans clicking Diagnose
 minutes — is exactly the moment a hard rejection hurts most. Retries with exponential backoff
 up to `max_wait_seconds`; only raises ConcurrencyLimitExceeded if it's still full after that.
 """
+
 import asyncio
 import time
 import uuid
-from typing import Awaitable, cast
+from collections.abc import Awaitable
+from typing import cast
 
 import redis.asyncio as aioredis
 
