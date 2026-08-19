@@ -1,30 +1,28 @@
 """
-Ported verbatim from claude-desktop/mcp_adf/tools/_shared.py — these are real, previously
-confirmed SDK serialization bug fixes (one of them recovered a real wiped data flow in the
-adf-mcp-test factory before it existed), not stylistic choices. Do not "simplify" this file.
+Shared helpers for ADF resource serialization and validation. These work around real Azure
+SDK serialization quirks — do not "simplify" this file.
 """
+
 import copy
 import re
 from datetime import timedelta, timezone
 
-from azure.mgmt.datafactory import DataFactoryManagementClient
 import azure.mgmt.datafactory.models as _adf_models
+from azure.mgmt.datafactory import DataFactoryManagementClient
 
 from mcp_servers.adf import client_cache
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def _client(tenant_id: str, client_id: str, client_secret: str, subscription_id: str) -> DataFactoryManagementClient:
+def _client(
+    tenant_id: str, client_id: str, client_secret: str, subscription_id: str
+) -> DataFactoryManagementClient:
     return client_cache.get_client(tenant_id, client_id, client_secret, subscription_id)
 
 
 def _to_ist(value) -> str | None:
-    """
-    ADF Studio's Monitor UI silently renders timestamps in the browser's local timezone
-    (IST for this team) with no timezone label, while the SDK returns UTC — the same run
-    can look "off by 5:30" when eyeballed next to Studio unless this is converted too.
-    """
+    """Converts a UTC timestamp to an IST-labeled string, matching ADF Studio's Monitor UI display."""
     if value is None:
         return None
     return value.astimezone(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
@@ -32,17 +30,14 @@ def _to_ist(value) -> str | None:
 
 def _to_wire_dict(resource) -> dict:
     """
-    True wire-format dict (camelCase, e.g. "dependsOn", "typeProperties.waitTimeInSeconds")
-    — the shape PipelineResource/DatasetResource/DataFlowResource.deserialize() actually
-    expects, and the same shape ADF Studio's "Code" view / ARM export uses.
+    Returns the true wire-format dict (camelCase, e.g. "dependsOn",
+    "typeProperties.waitTimeInSeconds") — the shape *Resource.deserialize() expects and the
+    same shape ADF Studio's "Code" view / ARM export uses.
 
-    NOT the same as `.as_dict()`, which uses Python attribute names (snake_case) and is
-    UNSAFE to feed back into `.deserialize()`: any field whose wire name differs from its
-    Python attribute name (dependsOn/depends_on, waitTimeInSeconds/wait_time_in_seconds,
-    variableName/variable_name, errorCode/error_code, ...) silently vanishes into an inert
-    `additional_properties` bucket instead of the real attribute, which then serializes
-    to ADF as empty/missing — activities appear created but aren't actually connected,
-    and typeProperties like variable names or error codes are silently dropped.
+    Not the same as `.as_dict()`, which uses Python attribute names (snake_case) and is
+    unsafe to feed back into `.deserialize()`: any field whose wire name differs from its
+    Python attribute name silently vanishes into an inert `additional_properties` bucket
+    instead of the real attribute.
     """
     serialized = resource.serialize(keep_readonly=True)
     return serialized.get("properties", serialized)
@@ -51,20 +46,14 @@ def _to_wire_dict(resource) -> dict:
 def _find_miscased_fields(obj, path: str = "") -> list[str]:
     """
     Recursively walks a deserialized SDK model object tree looking for
-    `additional_properties` keys that are a miscased (snake_case) version of a REAL
-    attribute the model has under a different, correctly-cased name — the exact failure
-    mode that caused the dependsOn/typeProperties bug (see _to_wire_dict): a caller-supplied
-    key `Model.deserialize()` doesn't recognize is silently dropped into
-    `additional_properties` instead of raising, so the field never reaches ADF, with no
-    error to signal it. Returns human-readable warnings; empty list if nothing looks wrong.
+    `additional_properties` keys that are a miscased (snake_case) version of a real
+    attribute the model has under a different, correctly-cased name: such a key is silently
+    dropped by `Model.deserialize()` instead of raising, so the field never reaches ADF, with
+    no error to signal it. Returns human-readable warnings; empty list if nothing looks wrong.
 
-    Deliberately does NOT flag every `additional_properties` entry — ADF genuinely allows
-    arbitrary custom properties on activities. Only flags a key that EXACTLY matches a real
-    Python attribute name this object type has (e.g. "depends_on", "wait_time_in_seconds").
-    That's the unambiguous signature of the bug: `.as_dict()`'s output (Python attribute
-    names) fed into `.deserialize()`, which only recognizes wire keys (e.g. "dependsOn") —
-    a genuine custom property would essentially never happen to collide with a real
-    attribute's exact Python name.
+    Only flags a key that exactly matches a real Python attribute name this object type has
+    (e.g. "depends_on", "wait_time_in_seconds") — ADF genuinely allows arbitrary custom
+    properties on activities, so a generic `additional_properties` entry alone is not flagged.
     """
     warnings: list[str] = []
     if obj is None:
@@ -87,20 +76,17 @@ def _find_miscased_fields(obj, path: str = "") -> list[str]:
     for key, extra_value in extra.items():
         if key not in real_names or not extra_value:
             continue
-        # Some compound wire keys (e.g. "properties.activities" on PipelineResource
-        # deserialized from a bare/unwrapped dict) get correctly flattened into the real
-        # attribute by msrest's deserializer AND redundantly echoed into
-        # additional_properties — a benign quirk, not dropped data. Distinguish that case
-        # from a genuine drop by checking whether the real attribute actually ended up
-        # populated: if it did, this is the harmless echo; if it's still empty/None while
-        # additional_properties holds a real value, the field was genuinely never applied.
+        # Some compound wire keys get flattened into the real attribute by msrest's
+        # deserializer AND redundantly echoed into additional_properties — a benign echo,
+        # not dropped data. If the real attribute is populated, skip; otherwise it's a
+        # genuine drop.
         if getattr(obj, key, None):
             continue
         correct_wire_key = attribute_map[key]["key"]
         warnings.append(
             f'{path or "root"}: key "{key}" was silently ignored — it looks like a '
             f'miscased version of the real field (wire key "{correct_wire_key}"; ADF '
-            f'uses camelCase, not snake_case). This value will NOT be applied.'
+            f"uses camelCase, not snake_case). This value will NOT be applied."
         )
 
     for attr_name in real_names:
@@ -110,16 +96,16 @@ def _find_miscased_fields(obj, path: str = "") -> list[str]:
             value = getattr(obj, attr_name)
         except AttributeError:
             continue
-        warnings.extend(_find_miscased_fields(value, f"{path}.{attr_name}" if path else attr_name))
+        warnings.extend(
+            _find_miscased_fields(value, f"{path}.{attr_name}" if path else attr_name)
+        )
     return warnings
 
 
 def _reject_if_miscased(resource, resource_label: str) -> dict | None:
     """
-    Returns an error dict (never write anything to ADF) if the just-deserialized resource
-    has any miscased-field warnings, else None. Call this right after every
-    `Model.deserialize()` and before the mutating API call that would otherwise silently
-    write incomplete data.
+    Returns an error dict if the just-deserialized resource has any miscased-field warnings,
+    else None. Call this right after `Model.deserialize()` and before the mutating API call.
     """
     warnings = _find_miscased_fields(resource)
     if not warnings:
@@ -129,7 +115,7 @@ def _reject_if_miscased(resource, resource_label: str) -> dict | None:
         "resource": resource_label,
         "warnings": warnings,
         "hint": 'ADF wire format is camelCase (e.g. "dependsOn", "typeProperties.waitTimeInSeconds"), '
-                "not Python-style snake_case. Fix the flagged keys and retry — nothing was written to ADF.",
+        "not Python-style snake_case. Fix the flagged keys and retry — nothing was written to ADF.",
     }
 
 
@@ -152,29 +138,32 @@ def _resolve_model_class(type_str: str):
         type_str = type_str[1:-1]
     if type_str.startswith("{") and type_str.endswith("}"):
         type_str = type_str[1:-1]
-    if type_str in ("str", "int", "float", "bool", "object", "long", "date", "datetime", "duration"):
+    if type_str in (
+        "str",
+        "int",
+        "float",
+        "bool",
+        "object",
+        "long",
+        "date",
+        "datetime",
+        "duration",
+    ):
         return None
     return getattr(_adf_models, type_str, None)
 
 
 def _resolve_concrete_class(base_cls, raw_item: dict):
     """
-    Uses the SDK's own polymorphic deserializer to find which concrete subclass
-    `raw_item` actually resolves to under `base_cls` (e.g. Activity -> ExecuteDataFlowActivity
-    based on its "type" field), instead of hand-chasing `_subtype_map` discriminator chains
-    ourselves — guaranteed consistent with what the real top-level deserialize() call does.
+    Uses the SDK's own polymorphic deserializer to find which concrete subclass `raw_item`
+    resolves to under `base_cls` (e.g. Activity -> ExecuteDataFlowActivity based on its
+    "type" field), consistent with what the real top-level deserialize() call does.
 
-    Critical: `Model.deserialize()` MUTATES its input dict (msrest pops consumed keys,
-    including the discriminator "type" key, off the raw dict as it parses). This function
-    is called purely for classification — to inspect the raw definition BEFORE the real
-    write — but `raw_item` is a piece of the caller's actual definition dict, the SAME
-    object that then gets fed to the real `Model.deserialize()` call a few lines later in
-    each tool function. Without the deepcopy below, this speculative call would strip
-    "type" from that shared object first, causing the REAL deserialize to lose the
-    discriminator too and silently fall back to the base (wrong) class — turning this
-    validator from a safety check into the very bug it exists to catch. Confirmed live:
-    this exact mutation wiped a real data flow's sources/sinks/script in the adf-mcp-test
-    factory before this fix (recovered via direct SDK write, not through this codepath).
+    `Model.deserialize()` mutates its input dict (msrest pops consumed keys, including the
+    discriminator "type" key, as it parses). `raw_item` is a piece of the caller's actual
+    definition dict, the same object later fed to the real `Model.deserialize()` call — the
+    deepcopy here prevents this speculative classification call from stripping "type" off
+    that shared object before the real deserialize runs.
     """
     try:
         return type(base_cls.deserialize(copy.deepcopy(raw_item)))
@@ -217,7 +206,11 @@ def _recurse_into_value(raw_val, type_str: str, path: str) -> list[str]:
             if not isinstance(item, dict):
                 continue
             concrete_cls = _resolve_concrete_class(base_cls, item)
-            warnings.extend(_find_dropped_flattened_fields(item, concrete_cls, f"{path}[{i}]", is_top=False))
+            warnings.extend(
+                _find_dropped_flattened_fields(
+                    item, concrete_cls, f"{path}[{i}]", is_top=False
+                )
+            )
         return warnings
     if type_str.startswith("{") and type_str.endswith("}"):
         # dict-of-X, e.g. "{GlobalParameterSpecification}", "{ParameterSpecification}" —
@@ -233,7 +226,11 @@ def _recurse_into_value(raw_val, type_str: str, path: str) -> list[str]:
             if not isinstance(sub_val, dict):
                 continue
             concrete_cls = _resolve_concrete_class(base_cls, sub_val)
-            warnings.extend(_find_dropped_flattened_fields(sub_val, concrete_cls, f"{path}.{sub_key}", is_top=False))
+            warnings.extend(
+                _find_dropped_flattened_fields(
+                    sub_val, concrete_cls, f"{path}.{sub_key}", is_top=False
+                )
+            )
         return warnings
     if isinstance(raw_val, dict):
         base_cls = _resolve_model_class(type_str)
@@ -244,30 +241,28 @@ def _recurse_into_value(raw_val, type_str: str, path: str) -> list[str]:
     return []
 
 
-def _find_dropped_flattened_fields(raw: dict, model_cls, path: str = "", is_top: bool = True) -> list[str]:
+def _find_dropped_flattened_fields(
+    raw: dict, model_cls, path: str = "", is_top: bool = True
+) -> list[str]:
     """
-    Walks the RAW (pre-deserialization) input dict against `model_cls`'s _attribute_map,
+    Walks the raw (pre-deserialization) input dict against `model_cls`'s _attribute_map,
     catching a class of silent data loss `_find_miscased_fields` cannot see: msrest's
     "client flattening" for compound wire keys (e.g. Activity's "typeProperties.dataFlow",
-    PipelineResource's "properties.activities"). When a nested key is miscased (e.g.
-    "typeProperties": {"data_flow": ...} instead of {"dataFlow": ...}), the wrong key isn't
-    real ADF data so it doesn't land in that object's `additional_properties` bucket the
-    way a flat-field miscasing would — it just vanishes during the flattening walk, with
-    nothing for `_find_miscased_fields` to inspect afterwards. This function catches it
-    BEFORE deserialization, by comparing the raw dict directly against the expected
-    wire-key shape.
+    PipelineResource's "properties.activities"). A miscased nested key (e.g.
+    "typeProperties": {"data_flow": ...} instead of {"dataFlow": ...}) just vanishes during
+    the flattening walk instead of landing in `additional_properties`, so this compares the
+    raw dict directly against the expected wire-key shape before deserialization.
 
     Resolves polymorphic activity/dataset/linked-service/data-flow subtypes via the SDK's
     own `Model.deserialize()` (see `_resolve_concrete_class`) rather than hand-chasing
-    `_subtype_map` discriminator chains, so it can't drift from the SDK's actual behavior.
+    `_subtype_map` discriminator chains.
 
     `is_top`: PipelineResource/DatasetResource/LinkedServiceResource/DataFlowResource/
-    GlobalParameterResource all support the SDK's client-flatten shorthand for their own
+    GlobalParameterResource support the SDK's client-flatten shorthand for their own
     top-level "properties" wrapper — callers may pass either the ARM-nested shape or the
     flat shape with "properties" omitted (this codebase always uses the flat shape). That
-    shorthand is specific to the outermost "properties" wrapper — nested namespaces like
-    an activity's own "typeProperties" always require the literal key to be present
-    (confirmed empirically) — so the fallback below only applies at the top level.
+    shorthand applies only at the top level; nested namespaces like an activity's own
+    "typeProperties" always require the literal key to be present.
     """
     warnings: list[str] = []
     if not isinstance(raw, dict):
@@ -297,23 +292,25 @@ def _find_dropped_flattened_fields(raw: dict, model_cls, path: str = "", is_top:
         for exp_key, (_attr_name, type_str) in expected.items():
             sub_val = ns_raw.get(exp_key)
             if sub_val is not None:
-                warnings.extend(_recurse_into_value(sub_val, type_str, f"{path}.{ns}.{exp_key}"))
+                warnings.extend(
+                    _recurse_into_value(sub_val, type_str, f"{path}.{ns}.{exp_key}")
+                )
 
     for key, (_attr_name, type_str) in plain.items():
         raw_val = raw.get(key)
         if raw_val is not None:
-            warnings.extend(_recurse_into_value(raw_val, type_str, f"{path}.{key}" if path else key))
+            warnings.extend(
+                _recurse_into_value(raw_val, type_str, f"{path}.{key}" if path else key)
+            )
 
     return warnings
 
 
 def _reject_if_dropped_fields(raw: dict, model_cls, resource_label: str) -> dict | None:
     """
-    Returns an error dict (never write anything to ADF) if `raw` — the definition dict as
-    supplied by the caller, BEFORE `Model.deserialize()` — has any dropped-flattened-field
-    warnings, else None. Call this alongside `_reject_if_miscased`, but on the raw dict and
-    before deserialization (it catches a different failure mode — see
-    `_find_dropped_flattened_fields`'s docstring).
+    Returns an error dict if `raw` — the definition dict as supplied by the caller, before
+    `Model.deserialize()` — has any dropped-flattened-field warnings, else None. Call this
+    alongside `_reject_if_miscased`, but on the raw dict and before deserialization.
     """
     warnings = _find_dropped_flattened_fields(raw, model_cls)
     if not warnings:
@@ -323,6 +320,6 @@ def _reject_if_dropped_fields(raw: dict, model_cls, resource_label: str) -> dict
         "resource": resource_label,
         "warnings": warnings,
         "hint": 'ADF wire format nests type-specific fields under "typeProperties" (or, for the outer '
-                'resource wrapper, "properties") using camelCase keys — e.g. "typeProperties.dataFlow", '
-                'not "typeProperties.data_flow". Fix the flagged keys and retry — nothing was written to ADF.',
+        'resource wrapper, "properties") using camelCase keys — e.g. "typeProperties.dataFlow", '
+        'not "typeProperties.data_flow". Fix the flagged keys and retry — nothing was written to ADF.',
     }
