@@ -9,13 +9,19 @@ from mcp_servers.adf.tools._shared import _client
 
 
 def get_integration_runtime_status(
-    integration_runtime_name: str, factory_name: str,
-    subscription_id: str, resource_group: str,
-    tenant_id: str, client_id: str, client_secret: str,
+    integration_runtime_name: str,
+    factory_name: str,
+    subscription_id: str,
+    resource_group: str,
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
 ) -> dict:
     """Read-only. Works for any integration runtime type (Azure, self-hosted, Azure-SSIS)."""
     client = _client(tenant_id, client_id, client_secret, subscription_id)
-    status = client.integration_runtimes.get_status(resource_group, factory_name, integration_runtime_name)
+    status = client.integration_runtimes.get_status(
+        resource_group, factory_name, integration_runtime_name
+    )
     props = status.properties
     return {
         "name": integration_runtime_name,
@@ -25,9 +31,13 @@ def get_integration_runtime_status(
 
 
 def start_integration_runtime(
-    integration_runtime_name: str, factory_name: str,
-    subscription_id: str, resource_group: str,
-    tenant_id: str, client_id: str, client_secret: str,
+    integration_runtime_name: str,
+    factory_name: str,
+    subscription_id: str,
+    resource_group: str,
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
     reason: str,
 ) -> dict:
     """
@@ -40,6 +50,12 @@ def start_integration_runtime(
     for that case, it will fail against the service.
     """
     client = _client(tenant_id, client_id, client_secret, subscription_id)
-    poller = client.integration_runtimes.begin_start(resource_group, factory_name, integration_runtime_name)
+    poller = client.integration_runtimes.begin_start(
+        resource_group, factory_name, integration_runtime_name
+    )
     result = poller.result()
-    return {"name": integration_runtime_name, "reason": reason, "state": getattr(result.properties, "state", None)}
+    return {
+        "name": integration_runtime_name,
+        "reason": reason,
+        "state": getattr(result.properties, "state", None),
+    }
