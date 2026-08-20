@@ -1,35 +1,26 @@
 """
 The two generic RCA tools every platform gets (check_known_fix, record_diagnosis_outcome) —
-thin @function_tool wrappers around db/rca.py's plain query/write logic. Moved out of
-llm/tools.py (2026-08-06) into its own mcp_servers folder, alongside adf/, since these are a
-tool set in their own right (backed by ProjectRCA) rather than generic Agents-SDK plumbing.
-Platform-agnostic: ProjectRCA is keyed by (pipeline_id, project, error_signature), none of
-which are ADF-specific concepts, so this has no dependency on mcp_servers/adf/.
+thin @function_tool wrappers around db/rca.py's plain query/write logic. Platform-agnostic:
+ProjectRCA is keyed by (pipeline_id, project, error_signature), none of which are ADF-specific
+concepts, so this has no dependency on mcp_servers/adf/.
 
-Deliberately NOT routed through gateway.rbac.RBACGateway/call_tool (2026-08-06, reviewed and
-kept as a documented exception, not an oversight):
-  - RBACPermission rows are platform-scoped (tool_name + platform, enforced since the
-    2026-08-06 _check_permission fix), but these two tools are unconditionally available on
-    EVERY platform, including ones with zero RBACPermission rows at all (build_tools_for_platform
-    adds them before any platform-specific dispatch even runs — see its own test,
-    test_custom_lookup_tools_always_present_regardless_of_platform). Gating them the same way
-    ADF's resource tools are gated would mean seeding a row per current-and-future platform for
-    a capability that isn't actually platform-specific, or leaving them denied by default the
-    moment a new platform is added — worse than today's behavior either way.
+Not routed through gateway.rbac.RBACGateway/call_tool:
+  - These two tools are unconditionally available on every platform, including ones with zero
+    RBACPermission rows at all (build_tools_for_platform adds them before any platform-specific
+    dispatch even runs).
   - They never touch Azure/external infrastructure — both read and write are scoped to RADAR's
-    own ProjectRCA bookkeeping table. There is no mutating/destructive action here for a human
-    approval flow to gate (needs_approval, the SDK-native layer ADF tools use), unlike a pipeline
-    rerun or a resource rollback.
+    own ProjectRCA bookkeeping table, so there is no mutating/destructive action here for a
+    human approval flow to gate, unlike a pipeline rerun or a resource rollback.
   - _dispatch()'s generic (db, project, **arguments) calling convention has no way to carry the
     optional pipeline_id-defaults-to-state["pipeline_name"] resolution these two tools need,
-    without colliding with an LLM-supplied `pipeline_id` argument of the same name — forcing
-    that through the shared dispatch path would need a real signature change to RBACGateway
-    itself, not a routing change.
-Both calls are still fully audited (AuditLog rows below), just under their own event types
+    without colliding with an LLM-supplied `pipeline_id` argument of the same name.
+
+Both calls are still fully audited (AuditLog rows below), under their own event types
 (known_fix_lookup / diagnosis_outcome_recorded) rather than rbac_tool_call_allowed/denied.
 """
+
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agents import function_tool
 
@@ -40,13 +31,17 @@ from llm.context import WorkflowContext
 from llm.investigation_state import InvestigationState
 
 
-def build_rca_tools(state: InvestigationState, ctx: WorkflowContext, user_id: str | None) -> list:
+def build_rca_tools(
+    state: InvestigationState, ctx: WorkflowContext, user_id: str | None
+) -> list:
     """check_known_fix/record_diagnosis_outcome — thin @function_tool wrappers around
     db/rca.py's plain query/write logic."""
     db_factory = ctx.db_factory
     _categories_line = ", ".join(ERROR_CATEGORIES)
 
-    async def check_known_fix(pipeline_id: str | None = None, error_category: str | None = None) -> str:
+    async def check_known_fix(
+        pipeline_id: str | None = None, error_category: str | None = None
+    ) -> str:
         """Check whether a known fix already exists — either in this exact pipeline's own RCA
         history, or (if error_category is given) on a different pipeline in this project that
         failed with the same error_category. This history is only as complete as prior calls
@@ -67,7 +62,10 @@ def build_rca_tools(state: InvestigationState, ctx: WorkflowContext, user_id: st
         resolved_pipeline_id = pipeline_id or state["pipeline_name"]
         async with db_factory() as db:
             same_pipeline_rows, cross_pipeline_row = await rca_db.find_known_fix(
-                db, resolved_pipeline_id, state["project"], error_category,
+                db,
+                resolved_pipeline_id,
+                state["project"],
+                error_category,
             )
 
             payload = {
@@ -86,30 +84,35 @@ def build_rca_tools(state: InvestigationState, ctx: WorkflowContext, user_id: st
                         "error_category": cross_pipeline_row.error_category,
                         "fix_applied": cross_pipeline_row.fix_applied,
                     }
-                    if cross_pipeline_row else None
+                    if cross_pipeline_row
+                    else None
                 ),
             }
 
-            db.add(AuditLog(
-                investigation_id=state["investigation_id"],
-                thread_id=state["thread_id"],
-                pipeline_name=state["pipeline_name"],
-                project=state["project"],
-                platform=state["platform"],
-                timestamp=datetime.now(tz=timezone.utc),
-                event_type="known_fix_lookup",
-                user_id=user_id,
-                # pipeline_name above stays the THREAD's own structural context (still
-                # "(ad-hoc)" for an ad-hoc thread, same as every other audit row) —
-                # resolved_pipeline_id records which pipeline was ACTUALLY looked up, which
-                # differs from it whenever the caller supplied an explicit pipeline_id.
-                detail={**payload, "resolved_pipeline_id": resolved_pipeline_id},
-            ))
+            db.add(
+                AuditLog(
+                    investigation_id=state["investigation_id"],
+                    thread_id=state["thread_id"],
+                    pipeline_name=state["pipeline_name"],
+                    project=state["project"],
+                    platform=state["platform"],
+                    timestamp=datetime.now(tz=UTC),
+                    event_type="known_fix_lookup",
+                    user_id=user_id,
+                    # pipeline_name above stays the THREAD's own structural context (still
+                    # "(ad-hoc)" for an ad-hoc thread, same as every other audit row) —
+                    # resolved_pipeline_id records which pipeline was ACTUALLY looked up, which
+                    # differs from it whenever the caller supplied an explicit pipeline_id.
+                    detail={**payload, "resolved_pipeline_id": resolved_pipeline_id},
+                )
+            )
             await db.commit()
 
         return json.dumps(payload)
 
-    check_known_fix.__doc__ = check_known_fix.__doc__.format(categories=_categories_line)
+    check_known_fix.__doc__ = check_known_fix.__doc__.format(
+        categories=_categories_line
+    )
     check_known_fix = function_tool(check_known_fix)
 
     async def record_diagnosis_outcome(
@@ -163,28 +166,38 @@ def build_rca_tools(state: InvestigationState, ctx: WorkflowContext, user_id: st
                 fix_applied=fix_applied,
             )
 
-            db.add(AuditLog(
-                investigation_id=state["investigation_id"],
-                thread_id=state["thread_id"],
-                pipeline_name=state["pipeline_name"],
-                project=state["project"],
-                platform=state["platform"],
-                timestamp=datetime.now(tz=timezone.utc),
-                event_type="diagnosis_outcome_recorded",
-                user_id=user_id,
-                detail={
-                    "error_signature": error_signature, "error_category": error_category,
-                    "created": created, "resolved_pipeline_id": resolved_pipeline_id,
-                },
-            ))
+            db.add(
+                AuditLog(
+                    investigation_id=state["investigation_id"],
+                    thread_id=state["thread_id"],
+                    pipeline_name=state["pipeline_name"],
+                    project=state["project"],
+                    platform=state["platform"],
+                    timestamp=datetime.now(tz=UTC),
+                    event_type="diagnosis_outcome_recorded",
+                    user_id=user_id,
+                    detail={
+                        "error_signature": error_signature,
+                        "error_category": error_category,
+                        "created": created,
+                        "resolved_pipeline_id": resolved_pipeline_id,
+                    },
+                )
+            )
             await db.commit()
 
-        return json.dumps({
-            "recorded": True, "created": created,
-            "pipeline_id": resolved_pipeline_id, "error_signature": error_signature,
-        })
+        return json.dumps(
+            {
+                "recorded": True,
+                "created": created,
+                "pipeline_id": resolved_pipeline_id,
+                "error_signature": error_signature,
+            }
+        )
 
-    record_diagnosis_outcome.__doc__ = record_diagnosis_outcome.__doc__.format(categories=_categories_line)
+    record_diagnosis_outcome.__doc__ = record_diagnosis_outcome.__doc__.format(
+        categories=_categories_line
+    )
     record_diagnosis_outcome = function_tool(record_diagnosis_outcome)
 
     return [check_known_fix, record_diagnosis_outcome]

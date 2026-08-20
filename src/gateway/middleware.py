@@ -1,11 +1,10 @@
 """
-HTTP middleware for the chat backend. Scoped to what actually applies to radar's traffic
-shape: every caller is a known server (WatchTower's Next.js backend, or the standalone
-tool-exec service), never a browser directly — so CORS/trusted-host (jlens's equivalent stack
-has both) don't fit here, there's no Origin header or public Host to restrict. What does apply
-regardless of caller: security headers (cheap, no reason to skip) and rate limiting (defense
-against a runaway caller or compromised network path hammering this service).
+HTTP middleware for the chat backend. Every caller is a known server (WatchTower's Next.js
+backend, or the standalone tool-exec service), never a browser directly, so there's no
+Origin header or public Host to restrict against — CORS/trusted-host don't apply here.
+Security headers and rate limiting apply regardless of caller.
 """
+
 import time
 
 import jwt
@@ -22,22 +21,26 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
         return response
 
 
 def _rate_limit_identity(request: Request) -> str:
     """Prefers the verified WatchTower user id (X-Radar-Assertion's 'id' claim) over client IP —
     every real chat/notification request arrives proxied through WatchTower's own backend, so
-    keying by request.client.host collapses the limit into one shared global counter for every
-    end user behind that one proxy IP (2026-08-06 fix). Falls back to IP for requests with no
-    assertion at all (the HMAC-signed intake webhook, which has no per-user identity to key on)
-    — this is a best-effort key choice for rate-limiting only, never an auth decision; an
-    invalid/expired token still gets its real 401 from the route's own dependency, not here."""
+    keying by request.client.host would collapse the limit into one shared global counter for
+    every end user behind that proxy IP. Falls back to IP for requests with no assertion at
+    all (the HMAC-signed intake webhook has no per-user identity to key on) — this is a
+    best-effort key choice for rate-limiting only, never an auth decision; an invalid/expired
+    token still gets its real 401 from the route's own dependency, not here."""
     assertion = request.headers.get("X-Radar-Assertion")
     if assertion:
         try:
-            payload = jwt.decode(assertion, settings.radar_assertion_secret, algorithms=["HS256"])
+            payload = jwt.decode(
+                assertion, settings.radar_assertion_secret, algorithms=["HS256"]
+            )
             user_id = payload.get("id")
             if user_id:
                 return f"user:{user_id}"
@@ -49,10 +52,9 @@ def _rate_limit_identity(request: Request) -> str:
 
 class RateLimitingMiddleware(BaseHTTPMiddleware):
     """Redis-backed fixed-window counter, keyed by verified user id where available (falling
-    back to client IP) — shared across every replica, unlike jlens's own in-memory version (its
-    technical doc lists that as Critical Issue #1: resets on restart, doesn't hold under
-    horizontal scaling). Redis already runs here (gateway/concurrency.py's DistributedSemaphore
-    uses the same instance), so this adds no new infrastructure."""
+    back to client IP) — shared across every replica. Redis already runs here
+    (gateway/concurrency.py's DistributedSemaphore uses the same instance), so this adds no
+    new infrastructure."""
 
     def __init__(self, app, calls_per_minute: int = 100):
         super().__init__(app)
@@ -74,6 +76,8 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
             count, _ = await pipe.execute()
 
         if count > self._calls_per_minute:
-            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+            return JSONResponse(
+                status_code=429, content={"detail": "Rate limit exceeded"}
+            )
 
         return await call_next(request)
