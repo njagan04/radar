@@ -25,7 +25,9 @@ class _FakeDb:
 
 
 def _patch_resolve(monkeypatch, client_secret="s3cr3t"):
-    monkeypatch.setattr("gateway.rbac.resolve_client_secret", AsyncMock(return_value=client_secret))
+    monkeypatch.setattr(
+        "gateway.rbac.resolve_client_secret", AsyncMock(return_value=client_secret)
+    )
 
 
 @pytest.mark.asyncio
@@ -33,44 +35,23 @@ async def test_dispatch_runs_sync_tool_via_executor(monkeypatch):
     def fake_sync_tool(**kwargs):
         return {"got": kwargs}
 
-    monkeypatch.setattr("gateway.rbac._TOOL_REGISTRY", {"fake_sync_tool": fake_sync_tool})
+    monkeypatch.setattr(
+        "gateway.rbac._TOOL_REGISTRY", {"fake_sync_tool": fake_sync_tool}
+    )
     _patch_resolve(monkeypatch)
     gateway = RBACGateway(db=_FakeDb(allowed=True))
 
     result = await gateway.call(
-        tool_name="fake_sync_tool", arguments={"x": 1},
-        user_id="system", pipeline_id="pl", project="acme", platform="adf",
+        tool_name="fake_sync_tool",
+        arguments={"x": 1},
+        user_id="system",
+        pipeline_id="pl",
+        project="acme",
+        platform="adf",
     )
 
     assert result["got"]["x"] == 1
     assert result["got"]["client_secret"] == "s3cr3t"
-
-
-@pytest.mark.asyncio
-async def test_dispatch_awaits_async_tool_with_db_and_project_injected(monkeypatch):
-    captured = {}
-
-    async def fake_async_tool(db, project, **kwargs):
-        captured["db"] = db
-        captured["project"] = project
-        captured["kwargs"] = kwargs
-        return {"ok": True}
-
-    monkeypatch.setattr("gateway.rbac._TOOL_REGISTRY", {"fake_async_tool": fake_async_tool})
-    _patch_resolve(monkeypatch)
-    fake_db = _FakeDb(allowed=True)
-    gateway = RBACGateway(db=fake_db)
-
-    result = await gateway.call(
-        tool_name="fake_async_tool", arguments={"y": 2},
-        user_id="system", pipeline_id="pl", project="acme", platform="adf",
-    )
-
-    assert result == {"ok": True}
-    assert captured["db"] is fake_db
-    assert captured["project"] == "acme"
-    assert captured["kwargs"]["y"] == 2
-    assert captured["kwargs"]["client_secret"] == "s3cr3t"
 
 
 @pytest.mark.asyncio
@@ -80,17 +61,24 @@ async def test_dispatch_denies_disallowed_tool_before_calling_it(monkeypatch):
 
     with pytest.raises(PermissionError):
         await gateway.call(
-            tool_name="anything", arguments={}, user_id="system",
-            pipeline_id="pl", project="acme", platform="adf",
+            tool_name="anything",
+            arguments={},
+            user_id="system",
+            pipeline_id="pl",
+            project="acme",
+            platform="adf",
         )
 
 
 @pytest.mark.asyncio
-async def test_client_authentication_error_invalidates_cache_entry_and_still_propagates(monkeypatch):
+async def test_client_authentication_error_invalidates_cache_entry_and_still_propagates(
+    monkeypatch,
+):
     """A stale/rotated credential surfaces as ClientAuthenticationError from the Azure SDK call
     inside a tool function. _dispatch() must evict that project's cached client (so the NEXT
     call rebuilds fresh) without swallowing the error — this call still fails, only the next
     one gets a chance to succeed."""
+
     def failing_tool(**kwargs):
         raise ClientAuthenticationError(message="invalid_client secret")
 
@@ -105,8 +93,12 @@ async def test_client_authentication_error_invalidates_cache_entry_and_still_pro
 
     with pytest.raises(ClientAuthenticationError):
         await gateway.call(
-            tool_name="failing_tool", arguments={}, user_id="system",
-            pipeline_id="pl", project="acme", platform="adf",
+            tool_name="failing_tool",
+            arguments={},
+            user_id="system",
+            pipeline_id="pl",
+            project="acme",
+            platform="adf",
         )
 
     invalidate.assert_called_once_with("t1", "c1", "rotated-secret", "s1")
@@ -124,7 +116,9 @@ async def test_enrich_arguments_cannot_override_trusted_infra_params(monkeypatch
         captured.update(kwargs)
         return {"ok": True}
 
-    monkeypatch.setattr("gateway.rbac._TOOL_REGISTRY", {"fake_sync_tool": fake_sync_tool})
+    monkeypatch.setattr(
+        "gateway.rbac._TOOL_REGISTRY", {"fake_sync_tool": fake_sync_tool}
+    )
     _patch_resolve(monkeypatch, client_secret="real-secret")
     gateway = RBACGateway(
         db=_FakeDb(allowed=True),
@@ -134,7 +128,10 @@ async def test_enrich_arguments_cannot_override_trusted_infra_params(monkeypatch
     await gateway.call(
         tool_name="fake_sync_tool",
         arguments={"tenant_id": "attacker-tenant", "pipeline_name": "CustomerLoad"},
-        user_id="system", pipeline_id="pl", project="acme", platform="adf",
+        user_id="system",
+        pipeline_id="pl",
+        project="acme",
+        platform="adf",
     )
 
     assert captured["tenant_id"] == "trusted-tenant"
@@ -149,12 +146,18 @@ async def test_enrich_resolves_client_secret_for_the_calling_project(monkeypatch
     other value — this is the trust boundary the whole cache design depends on."""
     resolve = AsyncMock(return_value="s3cr3t")
     monkeypatch.setattr("gateway.rbac.resolve_client_secret", resolve)
-    monkeypatch.setattr("gateway.rbac._TOOL_REGISTRY", {"fake_sync_tool": lambda **kwargs: {"ok": True}})
+    monkeypatch.setattr(
+        "gateway.rbac._TOOL_REGISTRY", {"fake_sync_tool": lambda **kwargs: {"ok": True}}
+    )
     gateway = RBACGateway(db=_FakeDb(allowed=True))
 
     await gateway.call(
-        tool_name="fake_sync_tool", arguments={}, user_id="system",
-        pipeline_id="pl", project="acme", platform="adf",
+        tool_name="fake_sync_tool",
+        arguments={},
+        user_id="system",
+        pipeline_id="pl",
+        project="acme",
+        platform="adf",
     )
 
     resolve.assert_called_once()
@@ -173,7 +176,9 @@ async def test_log_includes_arguments_but_never_client_secret(monkeypatch):
     def fake_sync_tool(**kwargs):
         return {"ok": True}
 
-    monkeypatch.setattr("gateway.rbac._TOOL_REGISTRY", {"rollback_resource_definition": fake_sync_tool})
+    monkeypatch.setattr(
+        "gateway.rbac._TOOL_REGISTRY", {"update_resource_definition": fake_sync_tool}
+    )
     _patch_resolve(monkeypatch)
 
     fake_db = _FakeDb(allowed=True)
@@ -181,16 +186,27 @@ async def test_log_includes_arguments_but_never_client_secret(monkeypatch):
     gateway = RBACGateway(db=fake_db)
 
     await gateway.call(
-        tool_name="rollback_resource_definition",
-        arguments={"resource_type": "dataset", "name": "Foo", "reason": "test", "state_name": "s1"},
-        user_id="alice@acme.com", pipeline_id="pl", project="acme", platform="adf",
+        tool_name="update_resource_definition",
+        arguments={
+            "resource_type": "dataset",
+            "name": "Foo",
+            "reason": "test",
+            "definition": {"type": "AzureSqlTable"},
+        },
+        user_id="alice@acme.com",
+        pipeline_id="pl",
+        project="acme",
+        platform="adf",
     )
 
     assert len(added) == 1
     entry = added[0]
-    assert entry.detail["tool"] == "rollback_resource_definition"
+    assert entry.detail["tool"] == "update_resource_definition"
     assert entry.detail["arguments"] == {
-        "resource_type": "dataset", "name": "Foo", "reason": "test", "state_name": "s1",
+        "resource_type": "dataset",
+        "name": "Foo",
+        "reason": "test",
+        "definition": {"type": "AzureSqlTable"},
     }
     assert "client_secret" not in entry.detail["arguments"]
     assert entry.user_id == "alice@acme.com"

@@ -12,8 +12,8 @@ from sqlalchemy import BigInteger, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
 
-from db.models import Base
 import main as main_module
+from db.models import Base
 
 
 @asynccontextmanager
@@ -51,7 +51,9 @@ async def chat_db_factory():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql("ATTACH DATABASE ':memory:' AS public")
-        await conn.exec_driver_sql('CREATE TABLE public."User" (id TEXT PRIMARY KEY, email TEXT NOT NULL)')
+        await conn.exec_driver_sql(
+            'CREATE TABLE public."User" (id TEXT PRIMARY KEY, email TEXT NOT NULL)'
+        )
         await conn.exec_driver_sql(
             'CREATE TABLE public."UserProjectAssignment" ('
             '"userId" TEXT NOT NULL, "projectName" TEXT NOT NULL, "notifyOnFailure" INTEGER NOT NULL DEFAULT 1)'
@@ -61,11 +63,16 @@ async def chat_db_factory():
     await engine.dispose()
 
 
-async def seed_watchtower_access(db_factory, user_id: str, email: str, project: str, notify_on_failure: bool = True) -> None:
+async def seed_watchtower_access(
+    db_factory, user_id: str, email: str, project: str, notify_on_failure: bool = True
+) -> None:
     """Populates the fake public."User"/public."UserProjectAssignment" rows chat/access.py's
     require_project_access and chat/thread_setup.py's recipient lookup actually query."""
     async with db_factory() as db:
-        await db.execute(text('INSERT INTO public."User" (id, email) VALUES (:id, :email)'), {"id": user_id, "email": email})
+        await db.execute(
+            text('INSERT INTO public."User" (id, email) VALUES (:id, :email)'),
+            {"id": user_id, "email": email},
+        )
         await db.execute(
             text(
                 'INSERT INTO public."UserProjectAssignment" ("userId", "projectName", "notifyOnFailure") '

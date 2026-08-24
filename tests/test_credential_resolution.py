@@ -2,7 +2,10 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.credential_resolution import CredentialResolutionError, resolve_client_secret
+from gateway.credential_resolution import (
+    CredentialResolutionError,
+    resolve_client_secret,
+)
 
 
 class _FakeRow:
@@ -35,14 +38,20 @@ class _FakeDb:
 @pytest.fixture(autouse=True)
 def _watchtower_key(monkeypatch):
     from gateway import credential_resolution
-    monkeypatch.setattr(credential_resolution.settings, "watchtower_credential_key", "shared-passphrase")
+
+    monkeypatch.setattr(
+        credential_resolution.settings, "watchtower_credential_key", "shared-passphrase"
+    )
     yield
 
 
 @pytest.mark.asyncio
 async def test_resolve_client_secret_decrypts_and_returns_it():
     db = _FakeDb(_FakeRow("ciphertext-blob"))
-    with patch("gateway.credential_resolution.decrypt_cryptojs_aes", return_value="super-secret") as decrypt:
+    with patch(
+        "gateway.credential_resolution.decrypt_cryptojs_aes",
+        return_value="super-secret",
+    ) as decrypt:
         secret = await resolve_client_secret(db, "acme")
 
     assert secret == "super-secret"
@@ -67,16 +76,26 @@ async def test_resolve_client_secret_raises_when_secret_column_is_empty():
 @pytest.mark.asyncio
 async def test_resolve_client_secret_raises_when_watchtower_key_not_set(monkeypatch):
     from gateway import credential_resolution
-    monkeypatch.setattr(credential_resolution.settings, "watchtower_credential_key", None)
+
+    monkeypatch.setattr(
+        credential_resolution.settings, "watchtower_credential_key", None
+    )
     db = _FakeDb(_FakeRow("ciphertext-blob"))
 
-    with pytest.raises(CredentialResolutionError, match="WATCHTOWER_CREDENTIAL_KEY is not set"):
+    with pytest.raises(
+        CredentialResolutionError, match="WATCHTOWER_CREDENTIAL_KEY is not set"
+    ):
         await resolve_client_secret(db, "acme")
 
 
 @pytest.mark.asyncio
 async def test_resolve_client_secret_wraps_decrypt_failure():
     db = _FakeDb(_FakeRow("corrupt-blob"))
-    with patch("gateway.credential_resolution.decrypt_cryptojs_aes", side_effect=ValueError("bad padding")):
-        with pytest.raises(CredentialResolutionError, match="Failed to decrypt client_secret"):
+    with patch(
+        "gateway.credential_resolution.decrypt_cryptojs_aes",
+        side_effect=ValueError("bad padding"),
+    ):
+        with pytest.raises(
+            CredentialResolutionError, match="Failed to decrypt client_secret"
+        ):
             await resolve_client_secret(db, "acme")
