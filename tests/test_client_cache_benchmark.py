@@ -15,6 +15,7 @@ What this can and can't measure locally, honestly:
     live measurement of Azure's actual latency, just a way to show the shape of the win: N calls
     pay the round trip once (cached) vs. N times (uncached).
 """
+
 import time
 
 from mcp_servers.adf import client_cache
@@ -28,7 +29,11 @@ _CALLS_PER_PROJECT = 20
 
 class _FakeCredential:
     def __init__(self, tenant_id, client_id, client_secret):
-        self.tenant_id, self.client_id, self.client_secret = tenant_id, client_id, client_secret
+        self.tenant_id, self.client_id, self.client_secret = (
+            tenant_id,
+            client_id,
+            client_secret,
+        )
 
 
 def _make_fake_client_cls():
@@ -36,7 +41,9 @@ def _make_fake_client_cls():
         construct_count = 0
 
         def __init__(self, credential, subscription_id):
-            time.sleep(_SIMULATED_AAD_ROUND_TRIP_SECONDS)  # only the FIRST build per project pays this
+            time.sleep(
+                _SIMULATED_AAD_ROUND_TRIP_SECONDS
+            )  # only the FIRST build per project pays this
             self.credential, self.subscription_id = credential, subscription_id
             _FakeClient.construct_count += 1
 
@@ -63,7 +70,9 @@ def test_cached_reuse_is_faster_than_rebuilding_per_call(monkeypatch, capsys):
         client_cache.get_client("tenant-a", "client-a", "secret-a", "sub-a")
     cached_seconds = time.perf_counter() - start
 
-    assert fake_client_cls.construct_count == 1  # only the first call actually built anything
+    assert (
+        fake_client_cls.construct_count == 1
+    )  # only the first call actually built anything
     assert cached_seconds < uncached_seconds / 5  # order-of-magnitude win, not a fluke
 
     capsys.readouterr()  # discard; real output goes via -s below

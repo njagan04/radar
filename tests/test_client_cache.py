@@ -71,12 +71,17 @@ def test_concurrent_different_projects_never_cross_contaminate():
         tenant_id, client_id, secret, sub = params
         for _ in range(20):
             client = client_cache.get_client(tenant_id, client_id, secret, sub)
-            if client.credential.tenant_id != tenant_id or client.subscription_id != sub:
+            if (
+                client.credential.tenant_id != tenant_id
+                or client.subscription_id != sub
+            ):
                 with lock:
-                    mismatches.append((tenant_id, client.credential.tenant_id, client.subscription_id))
+                    mismatches.append(
+                        (tenant_id, client.credential.tenant_id, client.subscription_id)
+                    )
 
     # 5 threads per project, interleaved start order so the pool genuinely races them
-    tasks = (projects * 5)
+    tasks = projects * 5
     with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
         list(ex.map(worker, tasks))
 
@@ -99,7 +104,9 @@ def test_concurrent_same_project_reuses_single_client():
 
 # Test 4 — cache initialization race: many concurrent first-time callers, one construction
 def test_cache_initialization_race_constructs_exactly_once():
-    _FakeClient.construct_delay = 0.05  # widen the race window around the cold-cache path
+    _FakeClient.construct_delay = (
+        0.05  # widen the race window around the cold-cache path
+    )
     barrier = threading.Barrier(12)
 
     def worker(_):
@@ -137,7 +144,9 @@ def test_ttl_expiry_evicts_stale_entry_and_reconstructs(monkeypatch):
 
     assert first is not second
     assert _FakeClient.construct_count == 2
-    assert len(client_cache._entries) == 1  # expired entry swept, not left to accumulate
+    assert (
+        len(client_cache._entries) == 1
+    )  # expired entry swept, not left to accumulate
 
 
 # Test 7 — explicit invalidation forces reconstruction (e.g. after an auth failure)
@@ -151,5 +160,7 @@ def test_invalidate_forces_reconstruction():
 
 
 def test_invalidate_unknown_key_is_a_no_op():
-    client_cache.invalidate("no-such-tenant", "no-such-client", "no-such-secret", "no-such-sub")
+    client_cache.invalidate(
+        "no-such-tenant", "no-such-client", "no-such-secret", "no-such-sub"
+    )
     assert client_cache._entries == {}
