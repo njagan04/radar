@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://json.schemastore.org/lefthook.json
+pre-commit:
+    parallel: true
+    skip:
+        - merge
+        - rebase
+    commands:
+        fmt-python:
+            glob: "*.{py,pyi}"
+            run: uv run ruff format {staged_files}
+            stage_fixed: true
+            fail_text: "Formatting failed — run 'uv run ruff format .' locally to see the full error"
+        lint-python:
+            glob: "*.{py,pyi}"
+            run: uv run ruff check --fix {staged_files}
+            stage_fixed: true
+            fail_text: "Lint failed — run 'uv run ruff check --fix .' locally to see the full error"
+
+pre-push:
+    commands:
+        lint:
+            run: uv run ruff check . && uv run ruff format --check .
+            fail_text: "Lint/format check failed — run 'uv run ruff check --fix .' and 'uv run ruff format .' locally before pushing"
